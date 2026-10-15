@@ -33,9 +33,8 @@ bool originAllowed(const std::string& origin)
 
 }  // namespace
 
-McpServer::McpServer(MainThreadRunner runOnMainThread, ToolCaller callTool)
-    : m_runOnMainThread(std::move(runOnMainThread))
-    , m_callTool(std::move(callTool))
+McpServer::McpServer(ToolCaller callTool)
+    : m_callTool(std::move(callTool))
 {
 }
 
@@ -140,9 +139,7 @@ std::string McpServer::handle(const std::string& body, bool& onlyNotifications)
             } else if (method == "tools/call") {
                 const std::string name = params.value("name", std::string());
                 const std::string arguments = params.value("arguments", json::object()).dump();
-                std::string result;
-                m_runOnMainThread([&]() { result = m_callTool(name, arguments); });
-                responses.push_back(resultResponse(id, json::parse(result)));
+                responses.push_back(resultResponse(id, json::parse(m_callTool(name, arguments))));
             } else {
                 responses.push_back(errorResponse(id, -32601, "Method not found: " + method));
             }
