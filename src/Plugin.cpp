@@ -161,7 +161,7 @@ MSGPI_EXPORT void MSGPIAPI AIAssistPluginLoad(const uint32_t endpointId, const M
 
     g_server = std::make_unique<aiassist::McpServer>(
         [](const std::string& name, const std::string& arguments) {
-            const aiassist::Editor editor(g_editorApi, &runOnMainThread);
+            const aiassist::Editor editor(g_editorApi, g_endpoint, &runOnMainThread);
             return aiassist::callTool(editor, name, nlohmann::json::parse(arguments)).dump();
         });
     std::string error;

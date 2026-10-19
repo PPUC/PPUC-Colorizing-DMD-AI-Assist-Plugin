@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
 #include "Png.h"
+#include "Retheme.h"
 
 namespace aiassist {
 
@@ -335,6 +337,258 @@ json showFrames(const Editor& editor, const json& arguments)
     return json{{"content", json::array({textContent("Shown in the editor.")})}};
 }
 
+// ---- Retheming template ------------------------------------------------------------------
+
+Snapshot requireSnapshot(const Editor& editor, bool withDynamicMasks)
+{
+    std::optional<Snapshot> snapshot = editor.snapshot(withDynamicMasks);
+    if (!snapshot) {
+        throw ToolError("No project is open in the editor. Ask the author to open one.");
+    }
+    return std::move(*snapshot);
+}
+
+RethemeChoices choicesFrom(const json& arguments, const Snapshot& snapshot)
+{
+    try {
+        return parseChoices(arguments, snapshot);
+    } catch (const std::invalid_argument& error) {
+        throw ToolError(error.what());
+    }
+}
+
+std::string percent(uint64_t part, uint64_t whole)
+{
+    return whole ? std::to_string((part * 100 + whole / 2) / whole) + "%" : std::string("-");
+}
+
+json rethemeSurvey(const Editor& editor, const json& arguments)
+{
+    const Snapshot snapshot = requireSnapshot(editor, true);
+    const RethemeChoices choices = choicesFrom(arguments, snapshot);
+    const std::string only = arguments.value("section", std::string());
+    std::ostringstream text;
+    text << "Rule: a dynamic zone stays (with its colors) where the frame's comparison mask lies "
+            "under it; everything else gets the plain look of a frame fresh from a dump. "
+            "Backgrounds and color rotations go; frames in keep_frames stay whole.\n\n"
+            "section | first frame | frames | with dynamic zones | with background | dynamic "
+            "pixels kept | doubtful frames\n";
+    uint64_t dynamic = 0;
+    uint64_t kept = 0;
+    std::size_t doubtful = 0;
+    for (const SectionSurvey& section : survey(snapshot, choices)) {
+        if (!only.empty() && section.name != only) {
+            continue;
+        }
+        dynamic += section.dynamicPixels;
+        kept += section.keptDynamicPixels;
+        doubtful += section.doubtful.size();
+        text << section.name << " | " << section.firstFrame << " | " << section.frames << " | "
+             << section.framesWithZones << " | " << section.framesWithBackground << " | "
+             << percent(section.keptDynamicPixels, section.dynamicPixels) << " | ";
+        if (section.doubtful.empty()) {
+            text << "-";
+        } else {
+            text << section.doubtful.size() << ":";
+            for (std::size_t index = 0; index < section.doubtful.size() && index < 12; ++index) {
+                text << ' ' << section.doubtful[index];
+            }
+            if (section.doubtful.size() > 12) {
+                text << " ...";
+            }
+        }
+        text << '\n';
+    }
+    text << "\nAll: " << percent(kept, dynamic) << " of the dynamic pixels kept, " << doubtful
+         << " doubtful frames (dynamic zones without a comparison mask, or less than half of "
+            "them under it). Look at doubtful frames with get_frame_image (views dynamic and "
+            "comparison_mask) and retheme_preview before you propose corrections.";
+    if (!editor.canEdit()) {
+        text << "\nThis editor's API is version " << editor.apiVersion()
+             << ": it cannot apply the template (version 2 needed).";
+    }
+    return json{{"content", json::array({textContent(text.str())})}};
+}
+
+// The SD picture as the runtime colors it: the colorized pixels, and the dynamic zones in their
+// sets' colors for the shade (when the zones are on the SD plane).
+Picture rethemePicture(const Plane<uint16_t>& colorized,
+                       const Plane<uint8_t>& original,
+                       const std::vector<uint8_t>* keep,
+                       const std::vector<uint16_t>& plain,
+                       const Plane<uint8_t>* zones,
+                       const std::vector<uint16_t>& dynamicColors,
+                       uint32_t shades)
+{
+    Picture picture(static_cast<int>(colorized.width), static_cast<int>(colorized.height));
+    for (uint32_t y = 0; y < colorized.height; ++y) {
+        for (uint32_t x = 0; x < colorized.width; ++x) {
+            const uint32_t ox = x * original.width / colorized.width;
+            const uint32_t oy = y * original.height / colorized.height;
+            const uint8_t shade = original.at(ox, oy);
+            uint16_t color = colorized.at(x, y);
+            if (keep && !(*keep)[oy * original.width + ox]) {
+                color = shade < plain.size() ? plain[shade] : uint16_t{0};
+            }
+            if (zones && zones->width == colorized.width && zones->height == colorized.height) {
+                const uint8_t set = zones->at(x, y);
+                const std::size_t index = static_cast<std::size_t>(set) * shades + shade;
+                if (set != 255 && index < dynamicColors.size()) {
+                    color = dynamicColors[index];
+                }
+            }
+            const auto [r, g, b] = fromRgb565(color);
+            picture.set(static_cast<int>(x), static_cast<int>(y), r, g, b);
+        }
+    }
+    return picture;
+}
+
+json rethemePreview(const Editor& editor, const json& arguments)
+{
+    if (!editor.canEdit()) {
+        throw ToolError("The editor's API is version " + std::to_string(editor.apiVersion()) +
+                        "; the retheming template needs version 2.");
+    }
+    Snapshot snapshot = requireSnapshot(editor, false);
+    const uint32_t frame = requireFrame(snapshot.project, arguments);
+    snapshot.dynamicMasks.resize(snapshot.project.frameCount);
+    if (snapshot.frames[frame].hasDynamicPixels) {
+        snapshot.dynamicMasks[frame] = editor.dynamicMask(frame);
+    }
+    const RethemeChoices choices = choicesFrom(arguments, snapshot);
+    const int scale = static_cast<int>(std::clamp(arguments.value("scale", 4LL), 1LL, 8LL));
+    const Plane<uint16_t> colorized = editor.colorized(frame, false);
+    const std::vector<uint16_t> plain = editor.plainColors();
+    const std::vector<uint16_t> dynamicColors = editor.dynamicColors(frame);
+    const Plane<uint8_t>& original = snapshot.originals[frame];
+    const RethemeFrame data = rethemeFrame(snapshot, frame);
+    const uint32_t shades = snapshot.project.colorCount;
+
+    const Picture now =
+        rethemePicture(colorized, original, nullptr, plain, data.zones, dynamicColors, shades);
+    std::string caption = "Frame " + std::to_string(frame) + ": now, then in the template";
+    Picture after = now;
+    if (choices.wholeFrames.count(frame)) {
+        caption += " (kept whole, unchanged)";
+    } else {
+        const FrameStrip strip = stripFrame(data, frame, choices);
+        const Plane<uint8_t>* zones = strip.zones ? &*strip.zones : data.zones;
+        after = rethemePicture(colorized, original, &strip.keep, plain, zones, dynamicColors, shades);
+        caption += " (" + std::to_string(strip.keptDynamicPixels) + " of " +
+                   std::to_string(strip.dynamicPixels) + " dynamic pixels kept";
+        if (snapshot.frames[frame].background != CDMDPI_NONE) {
+            caption += "; its background goes";
+        }
+        caption += ")";
+    }
+    caption += ". SD plane, " + std::to_string(colorized.width) + "x" +
+               std::to_string(colorized.height) + " pixels shown " + std::to_string(scale) +
+               "x; the background is not drawn.";
+    return json{{"content", json::array({textContent(caption), imageContent(scaled(now, scale)),
+                                         imageContent(scaled(after, scale))})}};
+}
+
+json rethemeApply(const Editor& editor, const json& arguments)
+{
+    if (!editor.canEdit()) {
+        throw ToolError("The editor's API is version " + std::to_string(editor.apiVersion()) +
+                        "; the retheming template needs version 2.");
+    }
+    const Snapshot snapshot = requireSnapshot(editor, true);
+    const RethemeChoices choices = choicesFrom(arguments, snapshot);
+    const std::string name = arguments.value("name", std::string("Retheming template"));
+
+    std::set<uint32_t> usedBackgrounds;
+    for (uint32_t frame : choices.wholeFrames) {
+        if (snapshot.frames[frame].background != CDMDPI_NONE) {
+            usedBackgrounds.insert(snapshot.frames[frame].background);
+        }
+    }
+    uint32_t stripped = 0;
+    uint64_t dynamic = 0;
+    uint64_t kept = 0;
+    uint32_t deletedBackgrounds = 0;
+    std::string failure;
+    const bool begun = editor.edit(name, [&](const EditSession& session) {
+        for (uint32_t frame = 0; frame < snapshot.project.frameCount; ++frame) {
+            if (choices.wholeFrames.count(frame)) {
+                continue;
+            }
+            const FrameStrip strip = stripFrame(rethemeFrame(snapshot, frame), frame, choices);
+            dynamic += strip.dynamicPixels;
+            kept += strip.keptDynamicPixels;
+            bool ok = session.resetFramePixels(frame, strip.keep);
+            if (ok && strip.zones) {
+                ok = session.setDynamicZones(frame, strip.zones->pixels);
+            }
+            if (ok && snapshot.frames[frame].background != CDMDPI_NONE) {
+                ok = session.setFrameBackground(frame, CDMDPI_NONE);
+            }
+            ok = ok && session.clearColorRotations(frame);
+            if (!ok) {
+                failure = "The editor refused a change of frame " + std::to_string(frame) + ".";
+                return false;
+            }
+            ++stripped;
+        }
+        for (uint32_t background = snapshot.project.backgroundCount; background-- > 0;) {
+            if (usedBackgrounds.count(background)) {
+                continue;
+            }
+            if (!session.deleteBackground(background)) {
+                failure = "The editor refused to delete background " +
+                          std::to_string(background) + ".";
+                return false;
+            }
+            ++deletedBackgrounds;
+        }
+        return true;
+    });
+    if (!begun) {
+        throw ToolError("The editor did not start an edit (no project, or another edit is open).");
+    }
+    if (!failure.empty()) {
+        throw ToolError(failure + " Nothing was changed.");
+    }
+    std::ostringstream text;
+    text << "Applied as one step '" << name << "': " << stripped << " frames stripped, "
+         << choices.wholeFrames.size() << " kept whole, " << kept << " of " << dynamic
+         << " dynamic pixels kept, " << deletedBackgrounds
+         << " backgrounds deleted. One Undo in the editor takes it all back; the author saves "
+            "the template under a new name (File -> Save As).";
+    return json{{"content", json::array({textContent(text.str())})}};
+}
+
+// The arguments the retheming tools share.
+json choiceProperties()
+{
+    const json area{
+        {"type", "object"},
+        {"properties",
+         {{"frames", {{"type", "array"}, {"items", {{"type", "integer"}}}}},
+          {"section", {{"type", "string"}, {"description", "All frames of this section"}}},
+          {"x", {{"type", "integer"}}},
+          {"y", {{"type", "integer"}}},
+          {"width", {{"type", "integer"}}},
+          {"height", {{"type", "integer"}}}}},
+        {"required", {"x", "y", "width", "height"}}};
+    const auto areas = [&area](const std::string& description) {
+        return json{{"type", "array"}, {"items", area}, {"description", description}};
+    };
+    return json{
+        {"keep_frames",
+         {{"type", "array"},
+          {"items", {{"type", "integer"}}},
+          {"description", "Frames kept whole, as references of the old theme (author's pick)"}}},
+        {"keep_areas",
+         areas("Static content kept in its colors, in original pixels: labels that belong to "
+               "varying content (BONUS of BONUS 2X, BALL, PLAYER, CREDITS)")},
+        {"keep_dynamic", areas("Dynamic zones kept although no comparison mask lies under them")},
+        {"drop_dynamic", areas("Dynamic zones dropped although a comparison mask lies under them")},
+    };
+}
+
 json schema(json properties, json required = json::array())
 {
     return json{{"type", "object"}, {"properties", std::move(properties)}, {"required", required}};
@@ -379,6 +633,47 @@ json toolList()
                     {"description", "The colorized plane, default sd"}}},
                   {"scale", {{"type", "integer"}, {"description", "1 to 8, default 4"}}}},
                  json::array({"frame"}))}},
+        {{"name", "retheme_survey"},
+         {"description",
+          "Retheming template, step 1 (reads only): per section, how many frames have dynamic "
+          "zones and backgrounds, how much of the dynamic content the rule keeps (dynamic zones "
+          "where the comparison mask lies under them: scores, counts, ball, player, credits) and "
+          "the frames where the rule is doubtful. Pass the corrections and keep_frames you plan "
+          "to see their effect."},
+         {"inputSchema",
+          schema([] {
+              json properties = choiceProperties();
+              properties["section"] = {{"type", "string"}, {"description", "Only this section"}};
+              return properties;
+          }())}},
+        {{"name", "retheme_preview"},
+         {"description",
+          "Retheming template, step 2: a frame now and as the template will have it, with the "
+          "choices given (the same arguments as retheme_apply). Changes nothing. Show doubtful "
+          "frames and proposed keep_areas to the author this way."},
+         {"inputSchema",
+          schema([] {
+              json properties = choiceProperties();
+              properties["frame"] = {{"type", "integer"}, {"description", "Frame index"}};
+              properties["scale"] = {{"type", "integer"}, {"description", "1 to 8, default 4"}};
+              return properties;
+          }(),
+                 json::array({"frame"}))}},
+        {{"name", "retheme_apply"},
+         {"description",
+          "Retheming template, step 3, only after the author agreed to the choices: strips the "
+          "whole project in one undoable step. Frames not kept whole get the plain look of a "
+          "frame fresh from a dump except the kept dynamic zones and keep_areas; dynamic zones "
+          "not kept, backgrounds (except those of frames kept whole) and color rotations go. "
+          "Comparison masks, shape modes, sprites, triggers, sections and durations stay."},
+         {"inputSchema",
+          schema([] {
+              json properties = choiceProperties();
+              properties["name"] = {{"type", "string"},
+                                    {"description", "The undo step's name, default "
+                                                    "'Retheming template'"}};
+              return properties;
+          }())}},
         {{"name", "get_selection"},
          {"description", "The frame the author looks at and the frames selected in the editor."},
          {"inputSchema", schema(json::object())}},
@@ -408,6 +703,15 @@ json callTool(const Editor& editor, const std::string& name, const json& argumen
         if (name == "get_frame_image") {
             return frameImage(editor, arguments);
         }
+        if (name == "retheme_survey") {
+            return rethemeSurvey(editor, arguments);
+        }
+        if (name == "retheme_preview") {
+            return rethemePreview(editor, arguments);
+        }
+        if (name == "retheme_apply") {
+            return rethemeApply(editor, arguments);
+        }
         if (name == "get_selection") {
             return selection(editor);
         }
@@ -431,7 +735,13 @@ std::string serverInstructions()
            "tools read it and can point the author at frames, nothing more yet. A frame has an "
            "original (the ROM's shades) and a colorized picture; comparison masks, dynamic "
            "zones, sprites and backgrounds decide how the runtime recognizes and colors frames. "
-           "Look before you judge (get_frame_image), and leave artistic choices to the author.";
+           "Look before you judge (get_frame_image), and leave artistic choices to the author.\n\n"
+           "Retheming: to give a game a new look, the project is stripped to a template that "
+           "keeps what varies (scores, bonus counts, ball, player, credits) and the frame "
+           "identification. Run retheme_survey, look at the doubtful frames, propose corrections "
+           "(keep_dynamic, drop_dynamic), static labels to keep (keep_areas) and a few frames to "
+           "keep whole as references (keep_frames), show them with retheme_preview, and run "
+           "retheme_apply only when the author agrees. It is one undo step.";
 }
 
 }  // namespace aiassist

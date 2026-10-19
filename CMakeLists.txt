@@ -28,6 +28,8 @@ add_library(AIAssistPlugin MODULE
     src/Plugin.cpp
     src/Png.cpp
     src/Png.h
+    src/Retheme.cpp
+    src/Retheme.h
     src/Tools.cpp
     src/Tools.h
 )
@@ -73,4 +75,17 @@ if(COLORIZINGDMD_PLUGIN_DIR)
                 "${COLORIZINGDMD_PLUGIN_DIR}/AIAssist"
         VERBATIM
     )
+endif()
+
+# Tests of the parts that need no editor.
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(aiassist_tests tests/RethemeTests.cpp src/Retheme.cpp)
+    target_include_directories(aiassist_tests PRIVATE src)
+    target_include_directories(aiassist_tests SYSTEM PRIVATE
+        "${COLORIZINGDMD_DIR}/plugin-api"
+        "${VPINBALL_DIR}/plugins"
+        "${PROJECT_SOURCE_DIR}/third-party"
+    )
+    add_test(NAME aiassist_tests COMMAND aiassist_tests)
 endif()

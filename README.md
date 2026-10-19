@@ -10,10 +10,11 @@ For a closed group of testers; it is not part of the editor's public releases. S
 
 ## State
 
-- Read-only: project summary, frame list, frames as images for the model, selection; pointing
+- Reading: project summary, frame list, frames as images for the model, selection; pointing
   the author at frames.
-- Planned: the analysis tools (varying pixels, mask merging, dynamic parts, sprite candidates)
-  and proposals applied as undoable edits.
+- Retheming template: a survey, a preview per frame and the strip itself, applied as one
+  undoable step (needs editor API version 2).
+- Planned: the analysis tools (varying pixels, mask merging, dynamic parts, sprite candidates).
 
 ## Build
 
@@ -45,7 +46,15 @@ The endpoint listens on 127.0.0.1 only (port 8975, or the next free one up to 89
 answers only requests with the token.
 
 Tools: `project_summary`, `list_frames`, `get_frame_image` (original, colorized, comparison
-mask, dynamic zones; enlarged with a pixel grid), `get_selection`, `show_frames`.
+mask, dynamic zones; enlarged with a pixel grid), `get_selection`, `show_frames`, and for the
+retheming template `retheme_survey`, `retheme_preview` and `retheme_apply`.
+
+Retheming: ask for a retheming template of the open project. The assistant runs the survey,
+looks at the frames where the rule is doubtful, proposes corrections, static labels to keep and
+frames to keep whole, shows them, and strips the project only when you agree. One Undo takes it
+back; save the template under a new name.
+
+Tests (no editor needed): `ctest --test-dir build`.
 
 ## License
 
