@@ -1,7 +1,7 @@
 # AI-Assisted Colorization: the plan
 
 Status: in development. This repository is the plugin; the editor API it uses is part of the
-editor (`qt_rewrite_v2/plugin-api/ColorizingDMDPlugin.h` in the ColorizingDMD repository).
+editor (`plugin-api/ColorizingDMDPlugin.h` in the ColorizingDMD repository).
 
 This is an add-on for a closed group of testers, not part of the public editor releases. The goal
 is to save authors time on the tedious parts, without making it easy to publish low-quality,

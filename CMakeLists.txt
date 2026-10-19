@@ -4,7 +4,7 @@ project(ColorizingDMDAIAssist VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# The editor API (ColorizingDMD's qt_rewrite_v2/plugin-api) and the VPX plugin SDK it builds on
+# The editor API (ColorizingDMD's plugin-api) and the VPX plugin SDK it builds on
 # (vpinball's plugins/plugins), as the editor is built with.
 set(COLORIZINGDMD_DIR "" CACHE PATH "ColorizingDMD sources")
 set(VPINBALL_DIR "" CACHE PATH "vpinball sources, for the plugin SDK")
@@ -12,7 +12,7 @@ set(VPINBALL_DIR "" CACHE PATH "vpinball sources, for the plugin SDK")
 # copied there after each build when set.
 set(COLORIZINGDMD_PLUGIN_DIR "" CACHE PATH "Editor plugin folder to copy the plugin into")
 
-if(NOT EXISTS "${COLORIZINGDMD_DIR}/qt_rewrite_v2/plugin-api/ColorizingDMDPlugin.h")
+if(NOT EXISTS "${COLORIZINGDMD_DIR}/plugin-api/ColorizingDMDPlugin.h")
     message(FATAL_ERROR "Set COLORIZINGDMD_DIR to the ColorizingDMD sources.")
 endif()
 if(NOT EXISTS "${VPINBALL_DIR}/plugins/plugins/MsgPlugin.h")
@@ -33,7 +33,7 @@ add_library(AIAssistPlugin MODULE
 )
 target_include_directories(AIAssistPlugin PRIVATE src)
 target_include_directories(AIAssistPlugin SYSTEM PRIVATE
-    "${COLORIZINGDMD_DIR}/qt_rewrite_v2/plugin-api"
+    "${COLORIZINGDMD_DIR}/plugin-api"
     "${VPINBALL_DIR}/plugins"
     "${PROJECT_SOURCE_DIR}/third-party"
     "${PROJECT_SOURCE_DIR}/third-party/httplib"
