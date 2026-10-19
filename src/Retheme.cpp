@@ -85,6 +85,16 @@ FrameStrip stripFrame(const RethemeFrame& frame, uint32_t frameIndex, const Reth
 {
     const Plane<uint8_t>& original = *frame.original;
     FrameStrip strip;
+    if (choices.wholeFrames.count(frameIndex)) {
+        strip.keep.assign(original.pixels.size(), 1);
+        if (frame.zones) {
+            for (uint8_t set : frame.zones->pixels) {
+                strip.dynamicPixels += set != 255 ? 1 : 0;
+            }
+        }
+        strip.keptDynamicPixels = strip.dynamicPixels;
+        return strip;
+    }
     strip.keep.assign(original.pixels.size(), 0);
     for (uint32_t y = 0; y < original.height; ++y) {
         for (uint32_t x = 0; x < original.width; ++x) {
@@ -144,6 +154,34 @@ RethemeFrame rethemeFrame(const Snapshot& snapshot, uint32_t frame)
     return result;
 }
 
+std::vector<uint32_t> representativeFrames(const Snapshot& snapshot,
+                                           const std::vector<uint32_t>& frames,
+                                           std::size_t limit)
+{
+    std::vector<uint32_t> chosen;
+    for (uint32_t frame : frames) {
+        if (chosen.size() >= limit) {
+            break;
+        }
+        const Plane<uint8_t>& original = snapshot.originals[frame];
+        const bool differs = std::all_of(chosen.begin(), chosen.end(), [&](uint32_t other) {
+            const Plane<uint8_t>& taken = snapshot.originals[other];
+            if (taken.pixels.size() != original.pixels.size()) {
+                return true;
+            }
+            std::size_t different = 0;
+            for (std::size_t index = 0; index < original.pixels.size(); ++index) {
+                different += original.pixels[index] != taken.pixels[index] ? 1 : 0;
+            }
+            return different * 6 >= original.pixels.size();
+        });
+        if (differs) {
+            chosen.push_back(frame);
+        }
+    }
+    return chosen;
+}
+
 std::vector<SectionSurvey> survey(const Snapshot& snapshot, const RethemeChoices& choices)
 {
     std::vector<SectionSurvey> sections(snapshot.sections.size() + 1);
@@ -152,10 +190,13 @@ std::vector<SectionSurvey> survey(const Snapshot& snapshot, const RethemeChoices
         sections[index + 1].name = snapshot.sections[index].name;
         sections[index + 1].firstFrame = snapshot.sections[index].firstFrame;
     }
+    std::vector<std::vector<uint32_t>> members(sections.size());
     for (uint32_t frame = 0; frame < snapshot.project.frameCount; ++frame) {
         const ColorizingDMDFrameInfo& info = snapshot.frames[frame];
-        SectionSurvey& section =
-            sections[info.section < snapshot.sections.size() ? info.section + 1 : 0];
+        const std::size_t sectionIndex =
+            info.section < snapshot.sections.size() ? info.section + 1 : 0;
+        SectionSurvey& section = sections[sectionIndex];
+        members[sectionIndex].push_back(frame);
         ++section.frames;
         if (info.background != CDMDPI_NONE) {
             ++section.framesWithBackground;
@@ -176,6 +217,9 @@ std::vector<SectionSurvey> survey(const Snapshot& snapshot, const RethemeChoices
             (!data.comparisonMask || strip.keptDynamicPixels * 2 < strip.dynamicPixels)) {
             section.doubtful.push_back(frame);
         }
+    }
+    for (std::size_t index = 0; index < sections.size(); ++index) {
+        sections[index].representative = representativeFrames(snapshot, members[index], 6);
     }
     sections.erase(std::remove_if(sections.begin(), sections.end(),
                                   [](const SectionSurvey& s) { return s.frames == 0; }),

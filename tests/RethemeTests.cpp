@@ -1,5 +1,6 @@
 // The retheming template's rule, survey and choices, on a small made-up project.
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -93,6 +94,27 @@ void testRule()
 
     const FrameStrip plain = stripFrame(rethemeFrame(snapshot, 2), 2, none);
     expect(!plain.zones && plain.dynamicPixels == 0, "a frame without zones");
+
+    RethemeChoices whole;
+    whole.wholeFrames.insert(0);
+    const FrameStrip kept = stripFrame(rethemeFrame(snapshot, 0), 0, whole);
+    expect(!kept.zones && kept.keptDynamicPixels == 48 &&
+               std::all_of(kept.keep.begin(), kept.keep.end(), [](uint8_t k) { return k == 1; }),
+           "a frame in keep_frames keeps its colors and its dynamic zones");
+}
+
+void testRepresentatives()
+{
+    Snapshot snapshot = makeSnapshot();
+    // Frame 1 differs from frame 0 in 2 of 128 pixels, frame 2 in a quarter.
+    fill(snapshot.originals[1], 0, 0, 2, 1, 3);
+    fill(snapshot.originals[2], 0, 0, 16, 2, 0);
+    expect(representativeFrames(snapshot, {0, 1, 2}, 6) == std::vector<uint32_t>{0, 2},
+           "frames that look alike are shown once");
+    expect(representativeFrames(snapshot, {0, 1, 2}, 1) == std::vector<uint32_t>{0},
+           "at most the limit");
+    expect(survey(snapshot, RethemeChoices{})[0].representative == std::vector<uint32_t>{0},
+           "the survey names a section's representative frames");
 }
 
 void testSurvey()
@@ -148,6 +170,7 @@ int main()
 {
     testRule();
     testSurvey();
+    testRepresentatives();
     testChoices();
     std::cout << "retheme tests passed\n";
     return 0;

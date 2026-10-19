@@ -3,8 +3,9 @@
 // The retheming template: the project stripped down to what a new theme keeps of an existing
 // colorization (see docs/plan.md, "Retheming template"). What varies in a frame (scores, bonus
 // counts, ball, player, credits) is where its dynamic zones lie under its comparison mask; that
-// stays with its colors, everything else gets the plain look of a frame fresh from a dump. The
-// assistant corrects the rule where it is wrong and names frames to keep whole.
+// stays with its colors, everything else is blacked out, so no artwork of the old theme is
+// left. The assistant corrects the rule where it is wrong and finds the frames whose colors are
+// kept: those with text any game has (BONUS 12X, MULTIBALL, SHOOT AGAIN, PLAYER 1).
 //
 // Pure functions over the project's data, without the editor, so they can be tested.
 
@@ -36,7 +37,7 @@ struct Area {
 
 // What the assistant (and the author) decided, by frame.
 struct RethemeChoices {
-    // Kept as they are: colors, dynamic zones, background, rotations.
+    // Keep their colors and dynamic zones (their backgrounds and rotations go as everywhere).
     std::set<uint32_t> wholeFrames;
     // Static content kept in its colors (BONUS of BONUS 2X).
     std::map<uint32_t, std::vector<Area>> keepAreas;
@@ -64,7 +65,7 @@ struct FrameStrip {
     uint32_t keptDynamicPixels = 0;
 };
 
-// The strip of one frame that is not kept whole.
+// The strip of one frame.
 [[nodiscard]] FrameStrip stripFrame(const RethemeFrame& frame,
                                     uint32_t frameIndex,
                                     const RethemeChoices& choices);
@@ -81,12 +82,21 @@ struct SectionSurvey {
     // Frames where the rule may be wrong: dynamic zones without a comparison mask, or less than
     // half of them under it.
     std::vector<uint32_t> doubtful;
+    // A few frames that show what the section has, see representativeFrames().
+    std::vector<uint32_t> representative;
 };
 
 // Per section (frames before the first section under "(no section)"), the rule with the
 // choices applied.
 [[nodiscard]] std::vector<SectionSurvey> survey(const Snapshot& snapshot,
                                                 const RethemeChoices& choices);
+
+// Frames of the list that look different: the first, then each one whose original differs from
+// every one taken in at least a sixth of its pixels, at most `limit`. For an overview of a
+// section without looking at all its frames.
+[[nodiscard]] std::vector<uint32_t> representativeFrames(const Snapshot& snapshot,
+                                                         const std::vector<uint32_t>& frames,
+                                                         std::size_t limit);
 
 // The frame's data in the snapshot, for stripFrame().
 [[nodiscard]] RethemeFrame rethemeFrame(const Snapshot& snapshot, uint32_t frame);

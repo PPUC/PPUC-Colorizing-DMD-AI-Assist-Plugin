@@ -51,10 +51,11 @@ public:
     {
     }
 
-    bool resetFramePixels(uint32_t frame, const std::vector<uint8_t>& keep) const
+    // fill: RGB565, or CDMDPI_NONE for the original's plain look.
+    bool resetFramePixels(uint32_t frame, const std::vector<uint8_t>& keep, uint32_t fill) const
     {
         return m_api->ResetFramePixels(m_endpoint, frame, keep.data(),
-                                       static_cast<uint32_t>(keep.size())) != 0;
+                                       static_cast<uint32_t>(keep.size()), fill) != 0;
     }
     bool setDynamicZones(uint32_t frame, const std::vector<uint8_t>& sets) const
     {

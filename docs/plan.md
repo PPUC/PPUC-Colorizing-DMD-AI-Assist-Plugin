@@ -147,16 +147,17 @@ comparison mask, which hides exactly the content that varies from identification
 exceptions are few sections (6% in one, 37% in another, two with dynamic zones and no mask).
 
 - Deterministic: for every frame, keep the dynamic zones where they lie under the frame's
-  comparison mask, with their colors; everything else gets the look of a frame fresh from a
-  dump (the original shades in plain colors), so nothing disappears and the new author colors
-  it with the usual tools. Backgrounds and color rotations go. Sprites, comparison masks, shape
-  modes, triggers, sections and durations stay. A survey lists, per section, how much of the
-  dynamic content that rule keeps and the frames where it is doubtful.
-- Judgment: the doubtful frames (dynamic zones outside the mask that are varying content after
-  all, or masked ones that are not); static labels that belong to varying content and are kept
-  in their colors (`BONUS` in `BONUS 2X`, `BALL`, `PLAYER`, `CREDITS`); frames kept whole as
-  references of the old theme (with their backgrounds and rotations). The assistant proposes
-  them, the author picks.
+  comparison mask, with their colors; everything else is blacked out, as it is the old theme's
+  artwork (getting a label back is less work for the new author than removing artwork from
+  every frame). All backgrounds and color rotations go. Sprites, comparison masks, shape modes,
+  triggers, sections and durations stay. A survey lists, per section, how much of the dynamic
+  content that rule keeps, the frames where it is doubtful, and a few representative frames
+  (frames that differ from each other), which contact sheets show many at a time.
+- Judgment: the frames with text any game has (`BONUS 12X`, `MULTIBALL`, `SHOOT AGAIN`,
+  `PLAYER 1`, `EXTRA BALL`, `JACKPOT`), which keep their colors and dynamic zones, or such text
+  next to artwork as kept areas; the doubtful frames (dynamic zones outside the mask that are
+  varying content after all, or masked ones that are not). The assistant finds them on the
+  contact sheets and proposes them, the author picks.
 - Applied as one undoable step (editor API 2: an edit batch).
 - Later: the same from a dump without a project, finding the varying content itself.
 

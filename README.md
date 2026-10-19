@@ -46,13 +46,15 @@ The endpoint listens on 127.0.0.1 only (port 8975, or the next free one up to 89
 answers only requests with the token.
 
 Tools: `project_summary`, `list_frames`, `get_frame_image` (original, colorized, comparison
-mask, dynamic zones; enlarged with a pixel grid), `get_selection`, `show_frames`, and for the
-retheming template `retheme_survey`, `retheme_preview` and `retheme_apply`.
+mask, dynamic zones; enlarged with a pixel grid), `get_selection`, `show_frames`, `get_contact_sheet` (many frames in one picture), and for the retheming template
+`retheme_survey`, `retheme_preview` and `retheme_apply`.
 
-Retheming: ask for a retheming template of the open project. The assistant runs the survey,
-looks at the frames where the rule is doubtful, proposes corrections, static labels to keep and
-frames to keep whole, shows them, and strips the project only when you agree. One Undo takes it
-back; save the template under a new name.
+Retheming: ask for a retheming template of the open project. The template keeps the varying
+content (scores, counts, ball, player) and blacks out the rest, the old theme's artwork. The
+assistant runs the survey, looks over the sections on contact sheets for frames with text any
+game has (BONUS 12X, MULTIBALL, SHOOT AGAIN, PLAYER 1) to keep in their colors, looks at the
+frames where the rule is doubtful, shows its proposals, and strips the project only when you
+agree. One Undo takes it back; save the template under a new name.
 
 Tests (no editor needed): `ctest --test-dir build`.
 
