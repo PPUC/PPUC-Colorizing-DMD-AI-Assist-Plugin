@@ -146,16 +146,22 @@ color fixed text by its shades. But about 90% of the dynamic pixels lie under th
 comparison mask, which hides exactly the content that varies from identification. The
 exceptions are few sections (6% in one, 37% in another, two with dynamic zones and no mask).
 
-- Deterministic: for every frame, keep the dynamic zones where they lie under the frame's
-  comparison mask, with their colors; everything else is blacked out, as it is the old theme's
-  artwork (getting a label back is less work for the new author than removing artwork from
-  every frame). All backgrounds and color rotations go. Sprites, comparison masks, shape modes,
-  triggers, sections and durations stay. A survey lists, per section, how much of the dynamic
-  content that rule keeps, the frames where it is doubtful, and a few representative frames
-  (frames that differ from each other), which contact sheets show many at a time.
+- Deterministic: the original frames are read as text lines (glyphs of a DMD font side by
+  side, inverse text in a bar included) and graphics. A text line where any of it lies under the
+  frame's comparison mask varies; it stays whole with its colors, and so do the lines right
+  above and below it (its labels: `BALL 1`, `HITS FOR SUPER JETS`). Dynamic zones stay where
+  they reach kept text: whole when they hold no graphics (a zone sized for a growing score),
+  else around the text. Everything else is blacked out, graphics always, as they are the old
+  theme's artwork (getting a label back is less work for the new author than removing artwork
+  from every frame). All backgrounds and color rotations go. Sprites, comparison masks, shape
+  modes, triggers, sections and durations stay. The first rule (dynamic zones under the mask)
+  cut words at the mask's edge in 774 of `afm_113b`'s frames and kept graphics in dynamic
+  zones; this one keeps whole lines. A survey lists, per section, the frames where the rule is
+  doubtful (text in a dynamic zone that is not kept), the text frames nothing is kept of with a
+  few candidates that differ (64 for the 404 of `afm_113b`), and representative frames, which
+  contact sheets show many at a time, as the runtime colors them.
 - Judgment: the frames with text any game has (`BONUS 12X`, `MULTIBALL`, `SHOOT AGAIN`,
-  `PLAYER 1`, `EXTRA BALL`, `JACKPOT`), which keep their colors and dynamic zones, or such text
-  next to artwork as kept areas; the doubtful frames (dynamic zones outside the mask that are
+  `PLAYER 1`, `EXTRA BALL`, `JACKPOT`), read from the candidates, which keep all their text; the doubtful frames (dynamic zones outside the mask that are
   varying content after all, or masked ones that are not). The assistant finds them on the
   contact sheets and proposes them, the author picks.
 - Applied as one undoable step (editor API 2: an edit batch).

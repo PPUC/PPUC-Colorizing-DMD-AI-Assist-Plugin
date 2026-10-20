@@ -1,11 +1,13 @@
 #pragma once
 
 // The retheming template: the project stripped down to what a new theme keeps of an existing
-// colorization (see docs/plan.md, "Retheming template"). What varies in a frame (scores, bonus
-// counts, ball, player, credits) is where its dynamic zones lie under its comparison mask; that
-// stays with its colors, everything else is blacked out, so no artwork of the old theme is
-// left. The assistant corrects the rule where it is wrong and finds the frames whose colors are
-// kept: those with text any game has (BONUS 12X, MULTIBALL, SHOOT AGAIN, PLAYER 1).
+// colorization (see docs/plan.md, "Retheming template"). The original frames are read as text
+// lines and graphics. A text line where any of it varies (lies under the frame's comparison
+// mask: scores, bonus counts, ball, player, credits) stays whole with its colors and the
+// dynamic zones that reach it, labels included (BALL 1, +0 BONUS X); everything else is blacked
+// out, graphics always, so no artwork of the old theme is left. The assistant corrects the rule
+// where it is wrong and finds the frames whose text is kept although nothing in them varies:
+// text any game has (BONUS 12X, MULTIBALL, SHOOT AGAIN, PLAYER 1).
 //
 // Pure functions over the project's data, without the editor, so they can be tested.
 
@@ -35,15 +37,31 @@ struct Area {
     }
 };
 
+// A line of text in an original frame: glyphs of a DMD font side by side (letters, digits and
+// their punctuation), told from graphics by their size and by their neighbours.
+struct TextLine {
+    // The bounding box, in original pixels (x1, y1 exclusive).
+    int x0 = 0;
+    int y0 = 0;
+    int x1 = 0;
+    int y1 = 0;
+    // The lit pixels of its glyphs, as indexes into the original.
+    std::vector<uint32_t> pixels;
+};
+
+// The text lines of an original frame; lit pixels in none of them are graphics.
+[[nodiscard]] std::vector<TextLine> findTextLines(const Plane<uint8_t>& original);
+
 // What the assistant (and the author) decided, by frame.
 struct RethemeChoices {
-    // Keep their colors and dynamic zones (their backgrounds and rotations go as everywhere).
+    // Keep all their text with its colors and dynamic zones (their graphics, backgrounds and
+    // rotations go as everywhere).
     std::set<uint32_t> wholeFrames;
     // Static content kept in its colors (BONUS of BONUS 2X).
     std::map<uint32_t, std::vector<Area>> keepAreas;
-    // Dynamic zones kept also where no comparison mask lies under them.
+    // Text lines and dynamic zones kept also where no comparison mask lies under them.
     std::map<uint32_t, std::vector<Area>> keepDynamic;
-    // Dynamic zones dropped also where a comparison mask lies under them.
+    // Text lines and dynamic zones dropped also where a comparison mask lies under them.
     std::map<uint32_t, std::vector<Area>> dropDynamic;
 };
 
@@ -63,6 +81,14 @@ struct FrameStrip {
     std::optional<Plane<uint8_t>> zones;
     uint32_t dynamicPixels = 0;
     uint32_t keptDynamicPixels = 0;
+    uint32_t textLines = 0;
+    uint32_t keptTextLines = 0;
+    // Lit pixels of the original, and of them those of text.
+    uint32_t litPixels = 0;
+    uint32_t textPixels = 0;
+    // Text lines in a dynamic zone that are not kept: the author colored them by their shades,
+    // perhaps because they vary although no mask lies under them.
+    uint32_t zonedTextLinesDropped = 0;
 };
 
 // The strip of one frame.
@@ -79,11 +105,14 @@ struct SectionSurvey {
     uint64_t dynamicPixels = 0;
     // Of those, the ones the rule keeps.
     uint64_t keptDynamicPixels = 0;
-    // Frames where the rule may be wrong: dynamic zones without a comparison mask, or less than
-    // half of them under it.
+    // Frames where the rule may be wrong: text in a dynamic zone that is not kept.
     std::vector<uint32_t> doubtful;
     // A few frames that show what the section has, see representativeFrames().
     std::vector<uint32_t> representative;
+    // Frames that are mostly text of which nothing is kept (MULTIBALL, PLAYER TWO): how many,
+    // and those of them that differ, candidates for keep_frames.
+    uint32_t textFrames = 0;
+    std::vector<uint32_t> textCandidates;
 };
 
 // Per section (frames before the first section under "(no section)"), the rule with the

@@ -368,11 +368,14 @@ json rethemeSurvey(const Editor& editor, const json& arguments)
     const RethemeChoices choices = choicesFrom(arguments, snapshot);
     const std::string only = arguments.value("section", std::string());
     std::ostringstream text;
-    text << "Rule: a dynamic zone stays (with its colors) where the frame's comparison mask lies "
-            "under it; everything else is blacked out. Frames in keep_frames keep their colors "
-            "and dynamic zones. All backgrounds and color rotations go.\n\n"
+    text << "Rule: the originals are read as text lines and graphics. A text line where any of it "
+            "lies under the frame's comparison mask (varying content) stays whole with its colors "
+            "and the dynamic zones that reach it, and so do the lines right above and below it "
+            "(its labels); everything else is blacked out, graphics always. Frames in "
+            "keep_frames keep all their text. All backgrounds and color rotations go.\n\n"
             "section | first frame | frames | with dynamic zones | with background | dynamic "
-            "pixels kept | doubtful frames | representative frames\n";
+            "pixels kept | doubtful frames | text frames nothing is kept of (candidates) | "
+            "representative frames\n";
     uint64_t dynamic = 0;
     uint64_t kept = 0;
     std::size_t doubtful = 0;
@@ -397,6 +400,14 @@ json rethemeSurvey(const Editor& editor, const json& arguments)
                 text << " ...";
             }
         }
+        text << " | " << section.textFrames;
+        if (!section.textCandidates.empty()) {
+            text << " (";
+            for (std::size_t index = 0; index < section.textCandidates.size(); ++index) {
+                text << (index ? " " : "") << section.textCandidates[index];
+            }
+            text << ")";
+        }
         text << " |";
         for (uint32_t frame : section.representative) {
             text << ' ' << frame;
@@ -407,8 +418,10 @@ json rethemeSurvey(const Editor& editor, const json& arguments)
          << " doubtful frames (dynamic zones without a comparison mask, or less than half of "
             "them under it). Look at doubtful frames with get_frame_image (views dynamic and "
             "comparison_mask) and retheme_preview before you propose corrections. To find the "
-            "frames to keep (text any game has: BONUS 12X, MULTIBALL, SHOOT AGAIN, PLAYER 1), "
-            "look at the representative frames with get_contact_sheet.";
+            "frames to keep (text any game has: BONUS 12X, MULTIBALL, SHOOT AGAIN, PLAYER 1, "
+            "EXTRA BALL, JACKPOT, REPLAY, MATCH), read the candidates of all sections with "
+            "get_contact_sheet (candidates: true); a candidate stands for the frames of its "
+            "section that look alike, so propose those too (get_contact_sheet with the section).";
     if (!editor.canEdit()) {
         text << "\nThis editor's API is version " << editor.apiVersion()
              << ": it cannot apply the template (version 2 needed).";
@@ -570,6 +583,21 @@ json rethemeApply(const Editor& editor, const json& arguments)
     return json{{"content", json::array({textContent(text.str())})}};
 }
 
+// The picture of a frame as the runtime colors it (dynamic zones in their sets' colors).
+Picture runtimePicture(const Editor& editor, const Snapshot& snapshot, uint32_t frame,
+                       const Plane<uint16_t>& colorized)
+{
+    Plane<uint8_t> zones;
+    std::vector<uint16_t> dynamicColors;
+    if (snapshot.frames[frame].hasDynamicPixels && !snapshot.project.dynamicPlaneIsHd) {
+        zones = editor.dynamicMask(frame);
+        dynamicColors = editor.dynamicColors(frame);
+    }
+    return rethemePicture(colorized, snapshot.originals[frame], nullptr, CDMDPI_NONE, {},
+                          zones.empty() ? nullptr : &zones, dynamicColors,
+                          snapshot.project.colorCount);
+}
+
 // Many frames in one picture, row by row, to look over a project quickly.
 json contactSheet(const Editor& editor, const json& arguments)
 {
@@ -605,11 +633,18 @@ json contactSheet(const Editor& editor, const json& arguments)
         what = "section '" + name + "'" +
                (arguments.value("all", false) ? std::string() : std::string(", frames that differ"));
     } else {
+        const bool candidates = arguments.value("candidates", false);
+        // Which text is kept does not depend on the dynamic zones.
         for (const SectionSurvey& section : survey(snapshot, RethemeChoices{})) {
-            frames.insert(frames.end(), section.representative.begin(),
-                          section.representative.end());
+            const std::vector<uint32_t>& chosen =
+                candidates ? section.textCandidates : section.representative;
+            frames.insert(frames.end(), chosen.begin(), chosen.end());
         }
-        what = "the representative frames of every section";
+        what = candidates ? "the text frames nothing is kept of, candidates for keep_frames"
+                          : "the representative frames of every section";
+        if (frames.empty()) {
+            throw ToolError("There are no such frames.");
+        }
     }
     const std::size_t start =
         static_cast<std::size_t>(std::max<long long>(0, arguments.value("start", 0LL)));
@@ -647,7 +682,7 @@ json contactSheet(const Editor& editor, const json& arguments)
             << start + frames.size() << " of " << total << ". Row by row:";
     for (std::size_t index = 0; index < frames.size(); ++index) {
         const uint32_t frame = frames[index];
-        const Picture tile = colorized ? colorizedPicture(pictures[index])
+        const Picture tile = colorized ? runtimePicture(editor, snapshot, frame, pictures[index])
                                        : originalPicture(snapshot.originals[frame],
                                                          snapshot.project.colorCount);
         const int left = kGap + static_cast<int>(index % columns) * (tileWidth + kGap);
@@ -696,9 +731,9 @@ json choiceProperties()
          {{"type", "array"},
           {"items", {{"type", "integer"}}},
           {"description",
-           "Frames that keep their colors and dynamic zones: text any game has (BONUS 12X, "
-           "MULTIBALL, SHOOT AGAIN, PLAYER 1), the author's pick. Their backgrounds and "
-           "rotations go too."}}},
+           "Frames that keep all their text with its colors and dynamic zones: text any game "
+           "has (BONUS 12X, MULTIBALL, SHOOT AGAIN, PLAYER 1), the author's pick. Their "
+           "graphics, backgrounds and rotations go as everywhere."}}},
         {"fill",
          {{"type", "string"},
           {"enum", {"black", "plain"}},
@@ -707,8 +742,11 @@ json choiceProperties()
         {"keep_areas",
          areas("Static content kept in its colors, in original pixels: labels that belong to "
                "varying content (BONUS of BONUS 2X, BALL, PLAYER, CREDITS)")},
-        {"keep_dynamic", areas("Dynamic zones kept although no comparison mask lies under them")},
-        {"drop_dynamic", areas("Dynamic zones dropped although a comparison mask lies under them")},
+        {"keep_dynamic",
+         areas("Text lines and dynamic zones kept although no comparison mask lies under them")},
+        {"drop_dynamic",
+         areas("Text lines and dynamic zones dropped although a comparison mask lies under "
+               "them")},
     };
 }
 
@@ -773,13 +811,18 @@ json toolList()
          {"description",
           "Many frames in one picture, row by row, the caption names each frame and its "
           "section: to look over a project quickly, for example to find the frames with text any "
-          "game has. Without frames or section: the representative frames of every section "
-          "(see retheme_survey). With a section: its frames that differ from each other (all of "
-          "them with all). At most 48 per call; page with start."},
+          "game has. Without frames or section: the representative frames of every section, or "
+          "with candidates the text frames the retheming template keeps nothing of (see "
+          "retheme_survey). With a section: its frames that differ from each other (all of them "
+          "with all). The colorized view shows frames as the runtime colors them, dynamic zones "
+          "included. At most 48 per call; page with start."},
          {"inputSchema",
           schema({{"frames", {{"type", "array"}, {"items", {{"type", "integer"}}}}},
                   {"section", {{"type", "string"}}},
                   {"all", {{"type", "boolean"}, {"description", "Every frame of the section"}}},
+                  {"candidates",
+                   {{"type", "boolean"},
+                    {"description", "The text frames of all sections nothing is kept of"}}},
                   {"start", {{"type", "integer"}, {"description", "Skip this many, default 0"}}},
                   {"view",
                    {{"type", "string"},
@@ -803,10 +846,11 @@ json toolList()
         {{"name", "retheme_apply"},
          {"description",
           "Retheming template, step 3, only after the author agreed to the choices: strips the "
-          "whole project in one undoable step. Frames not in keep_frames are blacked out except "
-          "the kept dynamic zones and keep_areas; dynamic zones not kept, all backgrounds and all "
-          "color rotations go. Comparison masks, shape modes, sprites, triggers, sections and "
-          "durations stay."},
+          "whole project in one undoable step. Everything is blacked out except the kept text "
+          "(varying lines and their labels, all text of keep_frames) with the dynamic zones "
+          "that reach it, and keep_areas; graphics, dynamic zones not kept, all backgrounds and "
+          "all color rotations go. Comparison masks, shape modes, sprites, triggers, sections "
+          "and durations stay."},
          {"inputSchema",
           schema([] {
               json properties = choiceProperties();
@@ -882,13 +926,15 @@ std::string serverInstructions()
            "Look before you judge (get_frame_image), and leave artistic choices to the author.\n\n"
            "Retheming: to give a game a new look, the project is stripped to a template that "
            "keeps what varies (scores, bonus counts, ball, player, credits) and the frame "
-           "identification; the rest is blacked out, as it is the old theme's artwork. Run "
-           "retheme_survey; find the frames with text any game has (BONUS 12X, MULTIBALL, SHOOT "
-           "AGAIN, PLAYER 1, EXTRA BALL, JACKPOT) on contact sheets of the representative "
-           "frames (get_contact_sheet) and propose them as keep_frames, or keep_areas for such "
-           "text next to artwork; look at the doubtful frames and propose corrections "
-           "(keep_dynamic, drop_dynamic); show them with retheme_preview, and run retheme_apply "
-           "only when the author agrees. It is one undo step.";
+           "identification: the text that varies with its labels; the rest is blacked out, "
+           "graphics always, as they are the old theme's artwork. Run retheme_survey. Read the "
+           "text frames nothing is kept of (get_contact_sheet with candidates: true) and "
+           "propose as keep_frames those with text any game has (BONUS 12X, MULTIBALL, SHOOT "
+           "AGAIN, PLAYER 1, EXTRA BALL, JACKPOT, REPLAY, MATCH, BALL SAVED), with the frames of "
+           "their section that look alike; section names help. Look at the doubtful frames and "
+           "propose corrections (keep_dynamic, drop_dynamic). Show your proposal as a list the "
+           "author can check quickly, with retheme_preview of a few frames, and run "
+           "retheme_apply only when the author agrees. It is one undo step.";
 }
 
 }  // namespace aiassist

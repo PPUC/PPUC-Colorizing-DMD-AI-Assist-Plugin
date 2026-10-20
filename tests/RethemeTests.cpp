@@ -37,8 +37,23 @@ void fill(Plane<uint8_t>& p, uint32_t x0, uint32_t y0, uint32_t w, uint32_t h, u
     }
 }
 
-// 16x8 frames. Frame 0: a score in zone 3 at x 8..15 under the mask, and a label in zone 1 at
-// x 0..3 that is not. Frame 1: zones and no mask. Frame 2: nothing dynamic, a background.
+// A glyph of a 3x5 font: a ring, like a zero.
+void glyph(Plane<uint8_t>& p, uint32_t x0, uint32_t y0)
+{
+    for (uint32_t y = 0; y < 5; ++y) {
+        for (uint32_t x = 0; x < 3; ++x) {
+            if (x != 1 || y == 0 || y == 4) {
+                p.pixels[(y0 + y) * p.width + x0 + x] = 3;
+            }
+        }
+    }
+}
+
+// 64x16 frames. Frame 0: a score of four glyphs at x 40..54, y 1, under the mask (x 36..63),
+// in dynamic zone 3 that is wider than the score (x 36..63, y 0..6); a label of three glyphs
+// right below it (y 8); a word at x 2..13, y 1 in zone 1 without the mask; a solid block of
+// graphics at x 20..33, y 9..14 under its own part of the mask and in zone 2. Frame 1: like
+// frame 0 without the mask. Frame 2: only a word, nothing else.
 Snapshot makeSnapshot()
 {
     Snapshot snapshot;
@@ -52,21 +67,50 @@ Snapshot makeSnapshot()
         info.comparisonMask = CDMDPI_NONE;
         info.background = CDMDPI_NONE;
         info.section = frame < 2 ? 0 : 1;
-        snapshot.originals.push_back(plane(16, 8, 2));
+        Plane<uint8_t> original = plane(64, 16, 0);
+        if (frame < 2) {
+            for (uint32_t x : {40u, 44u, 48u, 52u}) {
+                glyph(original, x, 1);
+            }
+            for (uint32_t x : {42u, 46u, 50u}) {
+                glyph(original, x, 8);
+            }
+            for (uint32_t x : {2u, 6u, 10u}) {
+                glyph(original, x, 1);
+            }
+            fill(original, 20, 9, 14, 6, 2);
+        } else {
+            for (uint32_t x : {20u, 24u, 28u}) {
+                glyph(original, x, 5);
+            }
+        }
+        snapshot.originals.push_back(original);
     }
-    snapshot.comparisonMasks.push_back(plane(16, 8, 0));
-    fill(snapshot.comparisonMasks[0], 8, 0, 8, 8, 1);
+    snapshot.comparisonMasks.push_back(plane(64, 16, 0));
+    fill(snapshot.comparisonMasks[0], 36, 0, 28, 7, 1);
+    fill(snapshot.comparisonMasks[0], 20, 9, 14, 6, 1);
     snapshot.frames[0].comparisonMask = 0;
-    snapshot.frames[0].hasDynamicPixels = 1;
-    snapshot.frames[1].hasDynamicPixels = 1;
-    snapshot.frames[2].background = 4;
     snapshot.dynamicMasks.resize(3);
-    snapshot.dynamicMasks[0] = plane(16, 8, 255);
-    fill(snapshot.dynamicMasks[0], 8, 2, 8, 4, 3);
-    fill(snapshot.dynamicMasks[0], 0, 2, 4, 4, 1);
-    snapshot.dynamicMasks[1] = plane(16, 8, 255);
-    fill(snapshot.dynamicMasks[1], 0, 0, 4, 2, 0);
+    for (uint32_t frame : {0u, 1u}) {
+        snapshot.frames[frame].hasDynamicPixels = 1;
+        snapshot.dynamicMasks[frame] = plane(64, 16, 255);
+        fill(snapshot.dynamicMasks[frame], 36, 0, 28, 7, 3);
+        fill(snapshot.dynamicMasks[frame], 0, 0, 16, 7, 1);
+        fill(snapshot.dynamicMasks[frame], 18, 8, 18, 8, 2);
+    }
+    snapshot.frames[2].background = 4;
     return snapshot;
+}
+
+void testText()
+{
+    const Snapshot snapshot = makeSnapshot();
+    const std::vector<TextLine> lines = findTextLines(snapshot.originals[0]);
+    expect(lines.size() == 3, "three text lines; the block is graphics");
+    const auto line = std::find_if(lines.begin(), lines.end(),
+                                   [](const TextLine& l) { return l.x0 == 40 && l.y0 == 1; });
+    expect(line != lines.end() && line->x1 == 55 && line->y1 == 6 && line->pixels.size() == 4 * 12,
+           "the score is one line of four glyphs");
 }
 
 void testRule()
@@ -74,47 +118,40 @@ void testRule()
     const Snapshot snapshot = makeSnapshot();
     const RethemeChoices none;
     const FrameStrip strip = stripFrame(rethemeFrame(snapshot, 0), 0, none);
-    expect(strip.dynamicPixels == 48 && strip.keptDynamicPixels == 32,
-           "the zone under the mask is kept, the other is not");
-    expect(strip.keep[3 * 16 + 10] == 1 && strip.keep[3 * 16 + 1] == 0 && strip.keep[0] == 0,
-           "the kept zone's pixels keep their colors, the rest does not");
-    expect(strip.zones && strip.zones->at(1, 3) == 255 && strip.zones->at(10, 3) == 3,
-           "the zone that is not kept goes");
+    const auto kept = [&strip](uint32_t x, uint32_t y) { return strip.keep[y * 64 + x] != 0; };
+    expect(strip.textLines == 3 && strip.keptTextLines == 2,
+           "the varying score and its label below are kept, the word apart is not");
+    expect(kept(40, 1) && kept(42, 8) && !kept(2, 1) && !kept(25, 10),
+           "kept text keeps its colors, the rest and graphics do not");
+    expect(strip.zones && strip.zones->at(60, 3) == 3 && strip.zones->at(37, 0) == 3,
+           "the score's zone stays whole, wider than the score");
+    expect(strip.zones->at(5, 3) == 255 && strip.zones->at(25, 10) == 255,
+           "the zone of the word apart and the zone of graphics go, mask or not");
+    expect(strip.zonedTextLinesDropped == 1, "the word in a zone is reported");
 
     RethemeChoices choices;
-    choices.keepDynamic[0].push_back(Area{0, 0, 4, 8});
-    choices.dropDynamic[0].push_back(Area{14, 0, 2, 8});
-    choices.keepAreas[0].push_back(Area{0, 7, 2, 1});
+    choices.keepDynamic[0].push_back(Area{0, 0, 16, 7});
+    choices.dropDynamic[0].push_back(Area{40, 8, 20, 6});
     const FrameStrip corrected = stripFrame(rethemeFrame(snapshot, 0), 0, choices);
-    expect(corrected.keptDynamicPixels == 16 + 24 && corrected.zones &&
-               corrected.zones->at(1, 3) == 1 && corrected.zones->at(15, 3) == 255,
-           "keep_dynamic and drop_dynamic correct the rule");
-    expect(corrected.keep[7 * 16 + 1] == 1 && corrected.keep[7 * 16 + 2] == 0,
+    expect(corrected.keep[1 * 64 + 2] && corrected.zones && corrected.zones->at(5, 3) == 1,
+           "keep_dynamic keeps the word and its zone");
+    expect(!corrected.keep[8 * 64 + 42], "drop_dynamic drops the label");
+    choices.keepAreas[0].push_back(Area{20, 9, 2, 1});
+    expect(stripFrame(rethemeFrame(snapshot, 0), 0, choices).keep[9 * 64 + 21] &&
+               !stripFrame(rethemeFrame(snapshot, 0), 0, choices).keep[9 * 64 + 22],
            "keep_areas keep static pixels");
 
-    const FrameStrip plain = stripFrame(rethemeFrame(snapshot, 2), 2, none);
-    expect(!plain.zones && plain.dynamicPixels == 0, "a frame without zones");
+    const FrameStrip unmasked = stripFrame(rethemeFrame(snapshot, 1), 1, none);
+    expect(unmasked.keptTextLines == 0 && unmasked.zones &&
+               std::all_of(unmasked.zones->pixels.begin(), unmasked.zones->pixels.end(),
+                           [](uint8_t set) { return set == 255; }),
+           "without a mask nothing varies");
 
     RethemeChoices whole;
-    whole.wholeFrames.insert(0);
-    const FrameStrip kept = stripFrame(rethemeFrame(snapshot, 0), 0, whole);
-    expect(!kept.zones && kept.keptDynamicPixels == 48 &&
-               std::all_of(kept.keep.begin(), kept.keep.end(), [](uint8_t k) { return k == 1; }),
-           "a frame in keep_frames keeps its colors and its dynamic zones");
-}
-
-void testRepresentatives()
-{
-    Snapshot snapshot = makeSnapshot();
-    // Frame 1 differs from frame 0 in 2 of 128 pixels, frame 2 in a quarter.
-    fill(snapshot.originals[1], 0, 0, 2, 1, 3);
-    fill(snapshot.originals[2], 0, 0, 16, 2, 0);
-    expect(representativeFrames(snapshot, {0, 1, 2}, 6) == std::vector<uint32_t>{0, 2},
-           "frames that look alike are shown once");
-    expect(representativeFrames(snapshot, {0, 1, 2}, 1) == std::vector<uint32_t>{0},
-           "at most the limit");
-    expect(survey(snapshot, RethemeChoices{})[0].representative == std::vector<uint32_t>{0},
-           "the survey names a section's representative frames");
+    whole.wholeFrames.insert(1);
+    const FrameStrip all = stripFrame(rethemeFrame(snapshot, 1), 1, whole);
+    expect(all.keptTextLines == 3 && all.keep[1 * 64 + 2] && !all.keep[10 * 64 + 25],
+           "a frame in keep_frames keeps all its text, not its graphics");
 }
 
 void testSurvey()
@@ -123,15 +160,32 @@ void testSurvey()
     const std::vector<SectionSurvey> sections = survey(snapshot, RethemeChoices{});
     expect(sections.size() == 2 && sections[0].name == "Score" && sections[1].name == "Logo",
            "the sections with frames, in order");
-    expect(sections[0].frames == 2 && sections[0].framesWithZones == 2 &&
-               sections[0].dynamicPixels == 48 + 8 && sections[0].keptDynamicPixels == 32,
-           "what the rule keeps of a section");
-    expect(sections[0].doubtful == std::vector<uint32_t>{1}, "zones without a mask are doubtful");
+    expect(sections[0].frames == 2 && sections[0].framesWithZones == 2,
+           "frames and frames with zones");
+    expect(sections[0].doubtful == std::vector<uint32_t>{0, 1},
+           "frames with text in a zone that is not kept are doubtful");
     expect(sections[1].framesWithBackground == 1, "backgrounds are counted");
+    expect(sections[1].textFrames == 1 && sections[1].textCandidates == std::vector<uint32_t>{2},
+           "a frame of only text nothing is kept of is a candidate");
 
     RethemeChoices choices;
     choices.wholeFrames.insert(1);
-    expect(survey(snapshot, choices)[0].doubtful.empty(), "a frame kept whole is not doubtful");
+    choices.wholeFrames.insert(2);
+    expect(survey(snapshot, choices)[0].doubtful == std::vector<uint32_t>{0} &&
+               survey(snapshot, choices)[1].textCandidates.empty(),
+           "frames kept are neither doubtful nor candidates");
+}
+
+void testRepresentatives()
+{
+    Snapshot snapshot = makeSnapshot();
+    // Frame 1 differs from frame 0 in 2 pixels, frame 2 in more than a sixth.
+    snapshot.originals[1].pixels[0] = 1;
+    snapshot.originals[1].pixels[1] = 1;
+    expect(representativeFrames(snapshot, {0, 1, 2}, 6) == std::vector<uint32_t>{0, 2},
+           "frames that look alike are shown once");
+    expect(representativeFrames(snapshot, {0, 1, 2}, 1) == std::vector<uint32_t>{0},
+           "at most the limit");
 }
 
 void testChoices()
@@ -168,6 +222,7 @@ void testChoices()
 
 int main()
 {
+    testText();
     testRule();
     testSurvey();
     testRepresentatives();
