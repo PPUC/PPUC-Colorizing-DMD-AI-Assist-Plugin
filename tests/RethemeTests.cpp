@@ -220,6 +220,8 @@ void testChoices()
 
 }  // namespace
 
+void runIdentifyTests();
+
 int main()
 {
     testText();
@@ -228,5 +230,6 @@ int main()
     testRepresentatives();
     testChoices();
     std::cout << "retheme tests passed\n";
+    runIdentifyTests();
     return 0;
 }

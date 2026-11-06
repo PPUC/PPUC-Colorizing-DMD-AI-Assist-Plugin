@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 
+#include "Identify.h"
 #include "Png.h"
 #include "Retheme.h"
 
@@ -710,6 +712,648 @@ json contactSheet(const Editor& editor, const json& arguments)
                                          imageContent(scaled(sheet, scale))})}};
 }
 
+// ---- Identification -------------------------------------------------------------------------
+
+std::string sectionOf(const Snapshot& snapshot, uint32_t frame)
+{
+    const uint32_t section = snapshot.frames[frame].section;
+    return section < snapshot.sections.size() ? snapshot.sections[section].name : std::string("-");
+}
+
+std::string comparisonText(const Snapshot& snapshot, uint32_t frame)
+{
+    const ColorizingDMDFrameInfo& info = snapshot.frames[frame];
+    return std::string("mask ") + idText(info.comparisonMask) + (info.shapeMode ? ", shape" : "");
+}
+
+// Frames as "12 (Section), 13, 14 (Other)": the section only where it changes.
+std::string frameListText(const Snapshot& snapshot, const std::vector<uint32_t>& frames,
+                          std::size_t limit)
+{
+    std::ostringstream text;
+    std::string lastSection;
+    for (std::size_t index = 0; index < frames.size() && index < limit; ++index) {
+        const std::string section = sectionOf(snapshot, frames[index]);
+        text << (index ? ", " : "") << frames[index];
+        if (section != lastSection) {
+            text << " (" << section << ")";
+            lastSection = section;
+        }
+    }
+    if (frames.size() > limit) {
+        text << " and " << frames.size() - limit << " more";
+    }
+    return text.str();
+}
+
+json comparisonMasks(const Editor& editor)
+{
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    const uint32_t total = snapshot.project.originalWidth * snapshot.project.originalHeight;
+    std::ostringstream text;
+    text << "Comparison masks of the " << total << " original pixels. compared: the pixels the "
+         << "comparison looks at; box: where they are (x, y, width, height); fewest lit: the lit "
+         << "pixels among them of the frame using the mask that has the fewest, i.e. how little "
+         << "content may identify a frame. Few compared or few lit pixels: the mask may catch "
+         << "frames it should not (find_identification_conflicts).\n"
+         << "mask | compared | box | fewest lit | frames\n";
+    for (const MaskUse& use : maskUses(snapshot)) {
+        text << use.mask << " | " << use.compared << " (" << percent(use.compared, total)
+             << ") | ";
+        if (use.compared) {
+            text << use.x0 << "," << use.y0 << " " << use.x1 - use.x0 << "x" << use.y1 - use.y0;
+        } else {
+            text << "-";
+        }
+        text << " | " << (use.frames.empty() ? std::string("-")
+                                              : std::to_string(use.fewestLitCompared))
+             << " | " << (use.frames.empty() ? std::string("unused")
+                                              : frameListText(snapshot, use.frames, 12))
+             << '\n';
+    }
+    return json{{"content", json::array({textContent(text.str())})}};
+}
+
+json identificationConflicts(const Editor& editor, const json& arguments)
+{
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    std::set<uint32_t> only;
+    for (const json& value : arguments.value("frames", json::array())) {
+        if (!value.is_number_integer()) {
+            throw ToolError("'frames' must list frame indexes.");
+        }
+        only.insert(value.get<uint32_t>());
+    }
+    const bool withSame = arguments.value("same_comparison", false);
+    const std::size_t limit =
+        static_cast<std::size_t>(std::clamp(arguments.value("limit", 30LL), 1LL, 500LL));
+    std::vector<Catch> catches = findCatches(snapshot);
+    const auto involved = [&only](const Catch& c) {
+        if (only.empty() || only.count(c.frame)) {
+            return true;
+        }
+        const auto in = [&only](const std::vector<uint32_t>& frames) {
+            return std::any_of(frames.begin(), frames.end(),
+                               [&only](uint32_t f) { return only.count(f) > 0; });
+        };
+        return in(c.otherComparison) || in(c.sameComparison);
+    };
+    std::vector<const Catch*> shown;
+    for (const Catch& c : catches) {
+        if (involved(c) && (!c.otherComparison.empty() || withSame)) {
+            shown.push_back(&c);
+        }
+    }
+    std::ostringstream text;
+    text << "Frames whose comparison (mask, shape mode) also matches the originals of other "
+         << "frames. The runtime tries the comparisons in frame order from the frame it found "
+         << "last, wrapping around, and takes the first match: a frame caught under another "
+         << "comparison is shown as the catching frame whenever that comparison comes first "
+         << "(it depends on what was shown before). Frames with an equal original are "
+         << "duplicates and left out. ";
+    if (!withSame) {
+        text << "Catches under the same comparison (the same frame to the runtime, the first in "
+             << "its order wins) are left out; same_comparison: true lists them. ";
+    }
+    text << shown.size() << " catching frames.\n";
+    for (std::size_t index = 0; index < shown.size() && index < limit; ++index) {
+        const Catch& c = *shown[index];
+        text << "- frame " << c.frame << " (" << sectionOf(snapshot, c.frame) << ", "
+             << comparisonText(snapshot, c.frame) << ") catches ";
+        if (!c.otherComparison.empty()) {
+            text << c.otherComparison.size() << " under other comparisons: "
+                 << frameListText(snapshot, c.otherComparison, 40);
+        }
+        if (withSame && !c.sameComparison.empty()) {
+            text << (c.otherComparison.empty() ? "" : "; ") << c.sameComparison.size()
+                 << " under the same comparison: " << frameListText(snapshot, c.sameComparison, 20);
+        }
+        text << '\n';
+    }
+    if (shown.size() > limit) {
+        text << "(" << shown.size() - limit << " more; raise limit)\n";
+    }
+    return json{{"content", json::array({textContent(text.str())})}};
+}
+
+json frameText(const Editor& editor, const json& arguments)
+{
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    const uint32_t frame = requireFrame(snapshot.project, arguments);
+    const Plane<uint8_t>& original = snapshot.originals[frame];
+    const ColorizingDMDFrameInfo& info = snapshot.frames[frame];
+    std::ostringstream text;
+    text << "Frame " << frame << " (" << sectionOf(snapshot, frame) << ", "
+         << comparisonText(snapshot, frame) << "), original " << original.width << "x"
+         << original.height << ", one character per pixel: the shade (0-9, then a-z, A-Z), '.' "
+         << "for 0. With the mask, pixels the comparison ignores are '#' in a second block.\n";
+    const std::string plain = originalText(original, true);
+    text << plain;
+    if (arguments.value("with_mask", true) &&
+        info.comparisonMask < snapshot.comparisonMasks.size()) {
+        const Plane<uint8_t>& mask = snapshot.comparisonMasks[info.comparisonMask];
+        std::string masked = plain;
+        for (uint32_t y = 0; y < mask.height && y < original.height; ++y) {
+            for (uint32_t x = 0; x < mask.width && x < original.width; ++x) {
+                if (mask.at(x, y)) {
+                    masked[y * (original.width + 1) + x] = '#';
+                }
+            }
+        }
+        text << "\nmask " << info.comparisonMask << " ('#' ignored, the shade where compared):\n"
+             << masked;
+    }
+    return json{{"content", json::array({textContent(text.str())})}};
+}
+
+json identifyOriginal(const Editor& editor, const json& arguments)
+{
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    Plane<uint8_t> original;
+    std::string what;
+    if (arguments.contains("rows")) {
+        std::vector<std::string> rows;
+        for (const json& row : arguments["rows"]) {
+            rows.push_back(row.get<std::string>());
+        }
+        std::string error;
+        original = parseOriginalText(rows, snapshot.project.originalWidth,
+                                     snapshot.project.originalHeight, snapshot.project.colorCount,
+                                     error);
+        if (original.empty()) {
+            throw ToolError(error);
+        }
+        what = "The frame given";
+    } else {
+        const uint32_t frame = requireFrame(snapshot.project, arguments);
+        original = snapshot.originals[frame];
+        what = "The original of frame " + std::to_string(frame);
+    }
+    const std::vector<uint32_t> frames = matchingFrames(snapshot, original);
+    std::ostringstream text;
+    if (frames.empty()) {
+        text << what << " matches no frame: the runtime does not colorize it (it shows the "
+             << "frame before or the original, as the project's settings say).";
+    } else {
+        text << what << " matches " << frames.size() << " frames. The runtime takes the first "
+             << "whose comparison it tries, in frame order from the frame it found last; more "
+             << "than one comparison listed means the result depends on what was shown before.\n";
+        std::map<std::string, std::vector<uint32_t>> byComparison;
+        for (uint32_t frame : frames) {
+            byComparison[comparisonText(snapshot, frame)].push_back(frame);
+        }
+        for (const auto& [comparison, members] : byComparison) {
+            text << "- " << comparison << ": " << frameListText(snapshot, members, 30) << '\n';
+        }
+    }
+    return json{{"content", json::array({textContent(text.str())})}};
+}
+
+// ---- The runtime and identification changes (editor API version 5) ------------------------
+
+void requireRuntime(const Editor& editor)
+{
+    if (!editor.canRunRuntime()) {
+        throw ToolError("The editor's API is version " + std::to_string(editor.apiVersion()) +
+                        "; running libserum and changing identification need version 5 (a "
+                        "newer editor).");
+    }
+}
+
+// An original given as rows in the get_frame_text format.
+Plane<uint8_t> originalFromRows(const Snapshot& snapshot, const json& rows)
+{
+    std::vector<std::string> lines;
+    for (const json& row : rows) {
+        lines.push_back(row.get<std::string>());
+    }
+    std::string error;
+    Plane<uint8_t> original =
+        parseOriginalText(lines, snapshot.project.originalWidth, snapshot.project.originalHeight,
+                          snapshot.project.colorCount, error);
+    if (original.empty()) {
+        throw ToolError(error);
+    }
+    return original;
+}
+
+// One input of a sequence: a project frame's original (an index or {"frame": n}), an original
+// as rows ({"rows": [...]}), either with patches over it ({"x", "y", "rows"}: shades written,
+// '?' keeps the pixel), repeated "repeat" times.
+std::vector<std::pair<std::string, Plane<uint8_t>>> sequenceFrom(const Snapshot& snapshot,
+                                                                 const json& sequence)
+{
+    if (!sequence.is_array() || sequence.empty()) {
+        throw ToolError("'sequence' must list the ROM frames to feed, in order.");
+    }
+    std::vector<std::pair<std::string, Plane<uint8_t>>> inputs;
+    for (const json& item : sequence) {
+        std::string label;
+        Plane<uint8_t> original;
+        long long repeat = 1;
+        const auto projectFrame = [&](const json& value) {
+            if (!value.is_number_integer() || value.get<long long>() < 0 ||
+                value.get<long long>() >= static_cast<long long>(snapshot.project.frameCount)) {
+                throw ToolError("A sequence item names a frame that does not exist.");
+            }
+            const uint32_t frame = value.get<uint32_t>();
+            label = "frame " + std::to_string(frame);
+            original = snapshot.originals[frame];
+        };
+        if (item.is_number_integer()) {
+            projectFrame(item);
+        } else if (item.is_object() && item.contains("frame")) {
+            projectFrame(item["frame"]);
+        } else if (item.is_object() && item.contains("rows")) {
+            original = originalFromRows(snapshot, item["rows"]);
+            label = "given";
+        } else {
+            throw ToolError("A sequence item is a frame index, {\"frame\": n} or {\"rows\": "
+                            "[...]}.");
+        }
+        if (item.is_object()) {
+            label = item.value("label", label);
+            repeat = std::clamp(item.value("repeat", 1LL), 1LL, 100LL);
+            for (const json& patch : item.value("patches", json::array())) {
+                const int x0 = patch.at("x").get<int>();
+                const int y0 = patch.at("y").get<int>();
+                const json& rows = patch.at("rows");
+                for (std::size_t r = 0; r < rows.size(); ++r) {
+                    const std::string row = rows[r].get<std::string>();
+                    for (std::size_t c = 0; c < row.size(); ++c) {
+                        const int x = x0 + static_cast<int>(c);
+                        const int y = y0 + static_cast<int>(r);
+                        if (row[c] == '?' || x < 0 || y < 0 ||
+                            x >= static_cast<int>(original.width) ||
+                            y >= static_cast<int>(original.height)) {
+                            continue;
+                        }
+                        std::string error;
+                        const Plane<uint8_t> one = parseOriginalText(
+                            {std::string(1, row[c])}, 1, 1, snapshot.project.colorCount, error);
+                        if (one.empty()) {
+                            throw ToolError("A patch has '" + std::string(1, row[c]) +
+                                            "', no shade of the project.");
+                        }
+                        original.pixels[static_cast<std::size_t>(y) * original.width + x] =
+                            one.pixels[0];
+                    }
+                }
+                label += " (patched)";
+            }
+        }
+        for (long long index = 0; index < repeat; ++index) {
+            inputs.emplace_back(label, original);
+        }
+    }
+    if (inputs.size() > 500) {
+        throw ToolError("At most 500 frames per run.");
+    }
+    return inputs;
+}
+
+std::string outcomeText(uint32_t outcome)
+{
+    switch (outcome) {
+        case CDMDPI_RUNTIME_NEW:
+            return "new";
+        case CDMDPI_RUNTIME_SAME:
+            return "same picture";
+        case CDMDPI_RUNTIME_INACTIVE:
+            return "inactive";
+        default:
+            return "unknown";
+    }
+}
+
+// The run as a table, and the displays as a contact sheet when asked for.
+json runContent(const Snapshot& snapshot,
+                const std::vector<std::pair<std::string, Plane<uint8_t>>>& inputs,
+                const RuntimeRun& run, bool sheet, std::size_t firstPicture,
+                const std::string& heading)
+{
+    std::ostringstream text;
+    text << heading
+         << "#: input | outcome (new: identified and shown; same picture: the display stays, "
+         << "the frame identified last or one with its picture; inactive: identified, renders "
+         << "nothing; unknown: identified nothing, the display stays) | identified | on display "
+         << "after it\n";
+    for (std::size_t index = 0; index < inputs.size(); ++index) {
+        const ColorizingDMDRuntimeResult& result = run.results[index];
+        text << index << ": " << inputs[index].first << " | " << outcomeText(result.outcome)
+             << " | " << idText(result.identified);
+        if (result.identified != CDMDPI_NONE) {
+            text << " (" << sectionOf(snapshot, result.identified) << ", "
+                 << comparisonText(snapshot, result.identified) << ")";
+        }
+        text << " | " << idText(result.shown) << '\n';
+    }
+    json content = json::array({textContent(text.str())});
+    if (sheet && !run.pictures.empty() && firstPicture < inputs.size()) {
+        const int width = static_cast<int>(run.width);
+        const int height = static_cast<int>(run.height);
+        const std::size_t shown = std::min<std::size_t>(inputs.size() - firstPicture, 24);
+        constexpr int kGap = 3;
+        // Each row: the input (the original in gray) and the display after it.
+        Picture page(2 * (width + kGap) + kGap, static_cast<int>(shown) * (height + kGap) + kGap);
+        for (int y = 0; y < page.height; ++y) {
+            for (int x = 0; x < page.width; ++x) {
+                page.set(x, y, 0, 40, 110);
+            }
+        }
+        for (std::size_t row = 0; row < shown; ++row) {
+            const std::size_t index = firstPicture + row;
+            const int top = kGap + static_cast<int>(row) * (height + kGap);
+            const Picture input =
+                originalPicture(inputs[index].second, snapshot.project.colorCount);
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    const int ox = x * input.width / width;
+                    const int oy = y * input.height / height;
+                    const std::size_t i = (static_cast<std::size_t>(oy) * input.width + ox) * 3;
+                    page.set(kGap + x, top + y, input.rgb[i], input.rgb[i + 1], input.rgb[i + 2]);
+                    const auto [r, g, b] = fromRgb565(
+                        run.pictures[index * run.width * run.height +
+                                     static_cast<std::size_t>(y) * run.width + x]);
+                    page.set(2 * kGap + width + x, top + y, r, g, b);
+                }
+            }
+        }
+        std::string caption = "Row by row, inputs " + std::to_string(firstPicture) + " to " +
+                              std::to_string(firstPicture + shown - 1) +
+                              ": the ROM frame fed (left) and the display after it (right).";
+        if (firstPicture + shown < inputs.size()) {
+            caption += " More with pictures_start " + std::to_string(firstPicture + shown) + ".";
+        }
+        content.push_back(textContent(caption));
+        content.push_back(imageContent(scaled(page, 2)));
+    }
+    return content;
+}
+
+std::vector<uint8_t> concatenated(const std::vector<std::pair<std::string, Plane<uint8_t>>>& inputs)
+{
+    std::vector<uint8_t> originals;
+    for (const auto& [label, original] : inputs) {
+        originals.insert(originals.end(), original.pixels.begin(), original.pixels.end());
+    }
+    return originals;
+}
+
+std::size_t pictureStart(const json& arguments)
+{
+    return static_cast<std::size_t>(std::max(0LL, arguments.value("pictures_start", 0LL)));
+}
+
+json runRuntime(const Editor& editor, const json& arguments)
+{
+    requireRuntime(editor);
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    const auto inputs = sequenceFrom(snapshot, arguments.value("sequence", json()));
+    const bool sheet = arguments.value("pictures", true);
+    const std::optional<RuntimeRun> run = editor.runOriginals(
+        concatenated(inputs), static_cast<uint32_t>(inputs.size()), sheet);
+    if (!run) {
+        throw ToolError("The editor could not run libserum on the project.");
+    }
+    return json{{"content",
+                 runContent(snapshot, inputs, *run, sheet, pictureStart(arguments),
+                            "libserum with the whole project, fed the frames in order from a "
+                            "fresh start.\n")}};
+}
+
+// A rectangle list as a plane of the original's size: 1 inside any.
+std::vector<uint8_t> areasPlane(const Snapshot& snapshot, const json& areas)
+{
+    const uint32_t width = snapshot.project.originalWidth;
+    const uint32_t height = snapshot.project.originalHeight;
+    std::vector<uint8_t> plane(static_cast<std::size_t>(width) * height, 0);
+    for (const json& area : areas) {
+        const int x0 = std::max(0, area.at("x").get<int>());
+        const int y0 = std::max(0, area.at("y").get<int>());
+        const int x1 = std::min(static_cast<int>(width), x0 + area.at("width").get<int>());
+        const int y1 = std::min(static_cast<int>(height), y0 + area.at("height").get<int>());
+        for (int y = y0; y < y1; ++y) {
+            for (int x = x0; x < x1; ++x) {
+                plane[static_cast<std::size_t>(y) * width + x] = 1;
+            }
+        }
+    }
+    return plane;
+}
+
+// A mask: "rows" with '#' for the ignored pixels (the get_frame_text mask block), or
+// "ignore_areas" with "compare_areas" cut out of them.
+std::vector<uint8_t> maskFrom(const Snapshot& snapshot, const json& change)
+{
+    const uint32_t width = snapshot.project.originalWidth;
+    const uint32_t height = snapshot.project.originalHeight;
+    if (change.contains("rows")) {
+        const json& rows = change["rows"];
+        if (rows.size() != height) {
+            throw ToolError("A mask needs " + std::to_string(height) + " rows.");
+        }
+        std::vector<uint8_t> mask;
+        for (const json& row : rows) {
+            const std::string line = row.get<std::string>();
+            if (line.size() != width) {
+                throw ToolError("A mask row needs " + std::to_string(width) + " characters.");
+            }
+            for (char c : line) {
+                mask.push_back(c == '#' ? 1 : 0);
+            }
+        }
+        return mask;
+    }
+    std::vector<uint8_t> mask = areasPlane(snapshot, change.value("ignore_areas", json::array()));
+    const std::vector<uint8_t> compare =
+        areasPlane(snapshot, change.value("compare_areas", json::array()));
+    for (std::size_t index = 0; index < mask.size(); ++index) {
+        mask[index] = mask[index] && !compare[index] ? 1 : 0;
+    }
+    return mask;
+}
+
+uint16_t rgb565From(const std::string& text)
+{
+    if (text.size() != 7 || text[0] != '#') {
+        throw ToolError("Colors are \"#rrggbb\", not '" + text + "'.");
+    }
+    const unsigned long value = std::stoul(text.substr(1), nullptr, 16);
+    const unsigned r = (value >> 16) & 0xff;
+    const unsigned g = (value >> 8) & 0xff;
+    const unsigned b = value & 0xff;
+    return static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+uint32_t frameArgument(const Snapshot& snapshot, const json& change)
+{
+    const long long frame = change.at("frame").get<long long>();
+    if (frame < 0 || frame >= static_cast<long long>(snapshot.project.frameCount)) {
+        throw ToolError("Frame " + std::to_string(frame) + " does not exist.");
+    }
+    return static_cast<uint32_t>(frame);
+}
+
+// Makes the changes in the open batch (on the main thread); a description per change, or a
+// ToolError naming the change the editor refused.
+std::vector<std::string> makeChanges(const EditSession& session, const Snapshot& snapshot,
+                                     const json& changes)
+{
+    const ColorizingDMDEditorAPI* api = session.api();
+    std::vector<std::string> done;
+    uint32_t maskCount = snapshot.project.comparisonMaskCount;
+    for (const json& change : changes) {
+        const std::string op = change.value("op", std::string());
+        bool made = false;
+        std::string what;
+        if (op == "set_comparison") {
+            const uint32_t frame = frameArgument(snapshot, change);
+            const uint32_t mask = change.contains("mask") && !change["mask"].is_null()
+                                      ? change["mask"].get<uint32_t>()
+                                      : CDMDPI_NONE;
+            const bool shape = change.value("shape", false);
+            made = session.setFrameComparison(frame, mask, shape);
+            what = "frame " + std::to_string(frame) + ": mask " + idText(mask) +
+                   (shape ? ", shape mode" : "");
+        } else if (op == "add_mask") {
+            std::vector<uint32_t> frames;
+            for (const json& frame : change.value("frames", json::array())) {
+                frames.push_back(frame.get<uint32_t>());
+            }
+            made = session.addComparisonMask(maskFrom(snapshot, change), frames);
+            what = "new mask " + std::to_string(maskCount) + " for " +
+                   std::to_string(frames.size()) + " frames";
+            maskCount += made ? 1 : 0;
+        } else if (op == "set_mask") {
+            const uint32_t mask = change.at("mask").get<uint32_t>();
+            made = session.setComparisonMask(mask, maskFrom(snapshot, change));
+            what = "mask " + std::to_string(mask) + " changed";
+        } else if (op == "set_dynamic_zones") {
+            const uint32_t frame = frameArgument(snapshot, change);
+            const long long set = change.value("set", 0LL);
+            if (set < 0 || set >= CDMDPI_DYNAMIC_SETS) {
+                throw ToolError("A dynamic set is 0 to 31.");
+            }
+            uint32_t width = 0;
+            uint32_t height = 0;
+            std::vector<uint8_t> zones(api->GetDynamicMask(frame, nullptr, 0, &width, &height));
+            api->GetDynamicMask(frame, zones.data(), static_cast<uint32_t>(zones.size()), nullptr,
+                                nullptr);
+            if (change.value("clear", false)) {
+                std::fill(zones.begin(), zones.end(), uint8_t{255});
+            }
+            const std::vector<uint8_t> inside = areasPlane(snapshot, change.value("areas", json()));
+            const uint32_t sx = std::max<uint32_t>(1, width / snapshot.project.originalWidth);
+            const uint32_t sy = std::max<uint32_t>(1, height / snapshot.project.originalHeight);
+            for (uint32_t y = 0; y < height; ++y) {
+                for (uint32_t x = 0; x < width; ++x) {
+                    if (inside[static_cast<std::size_t>(y / sy) * snapshot.project.originalWidth +
+                               x / sx]) {
+                        zones[static_cast<std::size_t>(y) * width + x] = static_cast<uint8_t>(set);
+                    }
+                }
+            }
+            made = session.setDynamicZones(frame, zones);
+            what = "frame " + std::to_string(frame) + ": dynamic zones of set " +
+                   std::to_string(set);
+        } else if (op == "set_dynamic_colors") {
+            const uint32_t frame = frameArgument(snapshot, change);
+            std::vector<uint16_t> colors;
+            for (const json& color : change.at("colors")) {
+                colors.push_back(rgb565From(color.get<std::string>()));
+            }
+            const uint32_t set = change.value("set", 0U);
+            made = session.setDynamicColors(frame, set, colors);
+            what = "frame " + std::to_string(frame) + ": colors of dynamic set " +
+                   std::to_string(set);
+        } else {
+            throw ToolError("Unknown change '" + op + "'.");
+        }
+        if (!made) {
+            throw ToolError("The editor refused the change " + std::to_string(done.size()) +
+                            " (" + (what.empty() ? op : what) + "); nothing was changed.");
+        }
+        done.push_back(what);
+    }
+    return done;
+}
+
+json tryIdentificationChanges(const Editor& editor, const json& arguments)
+{
+    requireRuntime(editor);
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    const auto inputs = sequenceFrom(snapshot, arguments.value("sequence", json()));
+    const bool sheet = arguments.value("pictures", true);
+    const std::vector<uint8_t> originals = concatenated(inputs);
+    std::optional<RuntimeRun> run;
+    std::vector<std::string> done;
+    std::string refused;
+    // The frames' comparisons as the changes leave them, for the table.
+    Snapshot changed = snapshot;
+    const bool begun = editor.edit("Try", [&](const EditSession& session) {
+        try {
+            done = makeChanges(session, snapshot, arguments.value("changes", json::array()));
+        } catch (const ToolError& error) {
+            refused = error.what();
+            return false;
+        }
+        for (uint32_t frame = 0; frame < changed.frames.size(); ++frame) {
+            session.api()->GetFrameInfo(frame, &changed.frames[frame]);
+        }
+        run = runOriginalsNow(session.api(), originals, static_cast<uint32_t>(inputs.size()),
+                              sheet);
+        return false;
+    });
+    if (!begun) {
+        throw ToolError("The editor could not begin an edit (the author may be editing).");
+    }
+    if (!refused.empty()) {
+        throw ToolError(refused);
+    }
+    if (!run) {
+        throw ToolError("The editor could not run libserum on the changed project.");
+    }
+    std::string heading = "With the changes (taken back again, the project is as before): ";
+    for (std::size_t index = 0; index < done.size(); ++index) {
+        heading += (index ? "; " : "") + done[index];
+    }
+    heading += ".\nlibserum fed the frames in order from a fresh start; the comparisons below "
+               "are those with the changes.\n";
+    return json{{"content",
+                 runContent(changed, inputs, *run, sheet, pictureStart(arguments), heading)}};
+}
+
+json applyIdentificationChanges(const Editor& editor, const json& arguments)
+{
+    requireRuntime(editor);
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    std::vector<std::string> done;
+    std::string refused;
+    const std::string name = arguments.value("name", std::string("Identification"));
+    const bool begun = editor.edit(name, [&](const EditSession& session) {
+        try {
+            done = makeChanges(session, snapshot, arguments.value("changes", json::array()));
+        } catch (const ToolError& error) {
+            refused = error.what();
+            return false;
+        }
+        return true;
+    });
+    if (!begun) {
+        throw ToolError("The editor could not begin an edit (the author may be editing).");
+    }
+    if (!refused.empty()) {
+        throw ToolError(refused);
+    }
+    std::string text = "Made as one undo step '" + name + "': ";
+    for (std::size_t index = 0; index < done.size(); ++index) {
+        text += (index ? "; " : "") + done[index];
+    }
+    text += ". The author saves the project to keep it.";
+    return json{{"content", json::array({textContent(text)})}};
+}
+
 // The arguments the retheming tools share.
 json choiceProperties()
 {
@@ -753,6 +1397,60 @@ json choiceProperties()
 json schema(json properties, json required = json::array())
 {
     return json{{"type", "object"}, {"properties", std::move(properties)}, {"required", required}};
+}
+
+json changesSchema()
+{
+    const json area{{"type", "object"},
+                    {"properties",
+                     {{"x", {{"type", "integer"}}},
+                      {"y", {{"type", "integer"}}},
+                      {"width", {{"type", "integer"}}},
+                      {"height", {{"type", "integer"}}}}},
+                    {"required", {"x", "y", "width", "height"}}};
+    return json{
+        {"type", "array"},
+        {"description",
+         "Changes, in order. op set_comparison: frame, mask (index or null), shape (bool). "
+         "op add_mask: frames, and the mask as rows ('#' ignored, anything else compared, the "
+         "get_frame_text mask block) or ignore_areas with compare_areas cut out (original "
+         "pixels); the new mask's index is the project's mask count. op set_mask: mask, rows or "
+         "areas as add_mask. op set_dynamic_zones: frame, set (0-31), areas (original pixels) "
+         "added to the frame's zones (clear: true drops the others first). op "
+         "set_dynamic_colors: frame, set, colors (\"#rrggbb\" per shade of the original, the "
+         "darkest first)."},
+        {"items",
+         {{"type", "object"},
+          {"properties",
+           {{"op",
+             {{"type", "string"},
+              {"enum", {"set_comparison", "add_mask", "set_mask", "set_dynamic_zones",
+                        "set_dynamic_colors"}}}},
+            {"frame", {{"type", "integer"}}},
+            {"frames", {{"type", "array"}, {"items", {{"type", "integer"}}}}},
+            {"mask", {{"type", {"integer", "null"}}}},
+            {"shape", {{"type", "boolean"}}},
+            {"rows", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+            {"ignore_areas", {{"type", "array"}, {"items", area}}},
+            {"compare_areas", {{"type", "array"}, {"items", area}}},
+            {"areas", {{"type", "array"}, {"items", area}}},
+            {"set", {{"type", "integer"}}},
+            {"clear", {{"type", "boolean"}}},
+            {"colors", {{"type", "array"}, {"items", {{"type", "string"}}}}}}},
+          {"required", {"op"}}}}};
+}
+
+json sequenceSchema()
+{
+    return json{
+        {"type", "array"},
+        {"description",
+         "The ROM frames fed to libserum, in order: a project frame's index, {\"frame\": n}, or "
+         "{\"rows\": [...]} (an original in the get_frame_text format); objects may have "
+         "patches ([{\"x\", \"y\", \"rows\"}]: shades written over it, '?' keeps a pixel), "
+         "repeat (1-100) and label. Make frames the ROM shows that the project lacks (a score "
+         "with other digits) by patching a project frame with glyphs read with get_frame_text."},
+        {"items", {{"type", {"integer", "object"}}}}};
 }
 
 }  // namespace
@@ -859,6 +1557,80 @@ json toolList()
                                                     "'Retheming template'"}};
               return properties;
           }())}},
+        {{"name", "comparison_masks"},
+         {"description",
+          "Every comparison mask: how many original pixels it compares and where, the fewest "
+          "lit pixels it compares of the frames using it, and those frames. Masks that compare "
+          "little may identify frames that are not theirs."},
+         {"inputSchema", schema(json::object())}},
+        {{"name", "find_identification_conflicts"},
+         {"description",
+          "Frames whose comparison (mask and shape mode) also matches other frames' originals, "
+          "so that the runtime may show them instead of those frames (a mask that ignores a "
+          "whole score matches every score). Use it when the author reports a wrong frame "
+          "shown, or before changing masks."},
+         {"inputSchema",
+          schema({{"frames",
+                   {{"type", "array"},
+                    {"items", {{"type", "integer"}}},
+                    {"description", "Only conflicts these frames are part of"}}},
+                  {"same_comparison",
+                   {{"type", "boolean"},
+                    {"description", "Also catches under the same comparison, default false"}}},
+                  {"limit", {{"type", "integer"}, {"description", "1 to 500, default 30"}}}})}},
+        {{"name", "get_frame_text"},
+         {"description",
+          "A frame's original as text, a character per pixel, with its comparison mask: exact "
+          "pixels to reason about, and rows to edit for identify_original."},
+         {"inputSchema",
+          schema({{"frame", {{"type", "integer"}}},
+                  {"with_mask", {{"type", "boolean"}, {"description", "Default true"}}}},
+                 json::array({"frame"}))}},
+        {{"name", "identify_original"},
+         {"description",
+          "Which project frames an original matches, as the runtime identifies: a frame of the "
+          "project, or a frame the ROM shows that is not in the project, given as rows in the "
+          "get_frame_text format (for example a project frame with the score changed)."},
+         {"inputSchema",
+          schema({{"frame", {{"type", "integer"}, {"description", "A project frame's original"}}},
+                  {"rows",
+                   {{"type", "array"},
+                    {"items", {{"type", "string"}}},
+                    {"description", "An original, one string per row"}}}})}},
+        {{"name", "run_runtime"},
+         {"description",
+          "Feeds ROM frames to libserum with the whole project loaded, as a machine does, and "
+          "tells per frame what libserum identified and what the player sees (a picture of the "
+          "input and the display per frame). The ground truth for identification: the order "
+          "matters, as libserum searches from the frame it found last. Needs editor API 5."},
+         {"inputSchema",
+          schema({{"sequence", sequenceSchema()},
+                  {"pictures",
+                   {{"type", "boolean"}, {"description", "The pictures, default true"}}},
+                  {"pictures_start",
+                   {{"type", "integer"},
+                    {"description", "The first input pictured (24 per call), default 0"}}}},
+                 json::array({"sequence"}))}},
+        {{"name", "try_identification_changes"},
+         {"description",
+          "Makes changes to identification and dynamic content, runs the sequence through "
+          "libserum as run_runtime does, and takes the changes back: to check a fix before "
+          "proposing it. Changes nothing in the end."},
+         {"inputSchema",
+          schema({{"changes", changesSchema()},
+                  {"sequence", sequenceSchema()},
+                  {"pictures", {{"type", "boolean"}}},
+                  {"pictures_start", {{"type", "integer"}}}},
+                 json::array({"changes", "sequence"}))}},
+        {{"name", "apply_identification_changes"},
+         {"description",
+          "Makes the changes (as try_identification_changes takes them) in the project as one "
+          "undoable step. Only after the author agreed to them."},
+         {"inputSchema",
+          schema({{"changes", changesSchema()},
+                  {"name",
+                   {{"type", "string"}, {"description", "The undo step's name"}}}},
+                 json::array({"changes"}))}},
         {{"name", "get_selection"},
          {"description", "The frame the author looks at and the frames selected in the editor."},
          {"inputSchema", schema(json::object())}},
@@ -900,6 +1672,27 @@ json callTool(const Editor& editor, const std::string& name, const json& argumen
         if (name == "retheme_apply") {
             return rethemeApply(editor, arguments);
         }
+        if (name == "comparison_masks") {
+            return comparisonMasks(editor);
+        }
+        if (name == "find_identification_conflicts") {
+            return identificationConflicts(editor, arguments);
+        }
+        if (name == "get_frame_text") {
+            return frameText(editor, arguments);
+        }
+        if (name == "identify_original") {
+            return identifyOriginal(editor, arguments);
+        }
+        if (name == "run_runtime") {
+            return runRuntime(editor, arguments);
+        }
+        if (name == "try_identification_changes") {
+            return tryIdentificationChanges(editor, arguments);
+        }
+        if (name == "apply_identification_changes") {
+            return applyIdentificationChanges(editor, arguments);
+        }
         if (name == "get_selection") {
             return selection(editor);
         }
@@ -920,7 +1713,8 @@ std::string serverInstructions()
 {
     return "You are connected to the ColorizingDMD editor, where an author colorizes pinball "
            "DMD animations for Serum. The project open in the editor is what you see; the "
-           "tools read it and can point the author at frames, nothing more yet. A frame has an "
+           "tools read it, point the author at frames, run libserum on it and make the changes "
+           "the author agreed to as undoable steps. A frame has an "
            "original (the ROM's shades) and a colorized picture; comparison masks, dynamic "
            "zones, sprites and backgrounds decide how the runtime recognizes and colors frames. "
            "Look before you judge (get_frame_image), and leave artistic choices to the author.\n\n"
@@ -934,7 +1728,18 @@ std::string serverInstructions()
            "their section that look alike; section names help. Look at the doubtful frames and "
            "propose corrections (keep_dynamic, drop_dynamic). Show your proposal as a list the "
            "author can check quickly, with retheme_preview of a few frames, and run "
-           "retheme_apply only when the author agrees. It is one undo step.";
+           "retheme_apply only when the author agrees. It is one undo step.\n\n"
+           "Wrong frames shown (the author or players report a frame colored as another, or a "
+           "frame not shown): libserum shows the first frame whose comparison (mask, shape mode) "
+           "matches, searching from the frame it found last. comparison_masks shows masks that "
+           "compare little, find_identification_conflicts frames that catch others, "
+           "get_frame_text the exact pixels. Frames the ROM shows that the project lacks (a "
+           "score with any digits) are made by patching a project frame with glyphs read from "
+           "others; identify_original and run_runtime tell what libserum does with them. A "
+           "frame whose mask ignores varying content needs dynamic zones there, else it shows "
+           "its own pixels instead of the ROM's. Check a fix with try_identification_changes "
+           "on sequences as a game plays them (what comes before matters), show the author the "
+           "result and apply it with apply_identification_changes only when the author agrees.";
 }
 
 }  // namespace aiassist

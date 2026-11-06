@@ -23,6 +23,8 @@ find_package(Threads REQUIRED)
 
 add_library(AIAssistPlugin MODULE
     src/Editor.h
+    src/Identify.cpp
+    src/Identify.h
     src/McpServer.cpp
     src/McpServer.h
     src/Plugin.cpp
@@ -80,7 +82,8 @@ endif()
 # Tests of the parts that need no editor.
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(aiassist_tests tests/RethemeTests.cpp src/Retheme.cpp)
+    add_executable(aiassist_tests tests/RethemeTests.cpp src/Retheme.cpp
+        tests/IdentifyTests.cpp src/Identify.cpp)
     target_include_directories(aiassist_tests PRIVATE src)
     target_include_directories(aiassist_tests SYSTEM PRIVATE
         "${COLORIZINGDMD_DIR}/plugin-api"

@@ -75,10 +75,66 @@ public:
         return m_api->ClearColorRotations(m_endpoint, frame) != 0;
     }
 
+    // Version 5: identification.
+    bool setFrameComparison(uint32_t frame, uint32_t mask, bool shape) const
+    {
+        return m_api->SetFrameComparison(m_endpoint, frame, mask, shape ? 1 : 0) != 0;
+    }
+    bool addComparisonMask(const std::vector<uint8_t>& ignored,
+                           const std::vector<uint32_t>& frames) const
+    {
+        return m_api->AddComparisonMask(m_endpoint, ignored.data(),
+                                        static_cast<uint32_t>(ignored.size()), frames.data(),
+                                        static_cast<uint32_t>(frames.size())) != 0;
+    }
+    bool setComparisonMask(uint32_t mask, const std::vector<uint8_t>& ignored) const
+    {
+        return m_api->SetComparisonMask(m_endpoint, mask, ignored.data(),
+                                        static_cast<uint32_t>(ignored.size())) != 0;
+    }
+    bool setDynamicColors(uint32_t frame, uint32_t set, const std::vector<uint16_t>& colors) const
+    {
+        return m_api->SetDynamicColors(m_endpoint, frame, set, colors.data(),
+                                       static_cast<uint32_t>(colors.size())) != 0;
+    }
+    [[nodiscard]] const ColorizingDMDEditorAPI* api() const { return m_api; }
+
 private:
     const ColorizingDMDEditorAPI* m_api;
     uint32_t m_endpoint;
 };
+
+// What the runtime did with a run of originals (RunOriginals).
+struct RuntimeRun {
+    std::vector<ColorizingDMDRuntimeResult> results;
+    // The display after each frame, RGB565, width x height each; empty without pictures.
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<uint16_t> pictures;
+};
+
+// RunOriginals on the main thread (inside the runner): the originals one after the other, each
+// of the original size. nullopt when the editor refused (no project, a bad shade, libserum).
+inline std::optional<RuntimeRun> runOriginalsNow(const ColorizingDMDEditorAPI* api,
+                                                 const std::vector<uint8_t>& originals,
+                                                 uint32_t frameCount, bool withPictures)
+{
+    if (api->version < 5 || !frameCount) {
+        return std::nullopt;
+    }
+    RuntimeRun run;
+    run.results.resize(frameCount);
+    if (withPictures) {
+        // The SD plane's size is that of a colorized frame.
+        const uint32_t size = api->GetColorizedFrame(0, 0, nullptr, 0, &run.width, &run.height);
+        run.pictures.resize(static_cast<std::size_t>(size) * frameCount);
+    }
+    if (!api->RunOriginals(originals.data(), frameCount, 0, run.results.data(),
+                           withPictures ? run.pictures.data() : nullptr)) {
+        return std::nullopt;
+    }
+    return run;
+}
 
 class Editor {
 public:
@@ -93,6 +149,16 @@ public:
 
     [[nodiscard]] int apiVersion() const { return m_api->version; }
     [[nodiscard]] bool canEdit() const { return m_api->version >= 2; }
+    [[nodiscard]] bool canRunRuntime() const { return m_api->version >= 5; }
+
+    [[nodiscard]] std::optional<RuntimeRun> runOriginals(const std::vector<uint8_t>& originals,
+                                                         uint32_t frameCount,
+                                                         bool withPictures) const
+    {
+        std::optional<RuntimeRun> run;
+        m_run([&]() { run = runOriginalsNow(m_api, originals, frameCount, withPictures); });
+        return run;
+    }
 
     // Runs the changes as one edit batch under the name, in one call on the main thread, so
     // the author cannot edit in between: recorded as one undo step when changes returns true,

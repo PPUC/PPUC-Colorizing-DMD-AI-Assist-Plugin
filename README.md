@@ -14,6 +14,10 @@ For a closed group of testers; it is not part of the editor's public releases. S
   the author at frames.
 - Retheming template: a survey, a preview per frame and the strip itself, applied as one
   undoable step (needs editor API version 2).
+- Identification: comparison masks and the frames they catch, originals as text, which frames
+  an original matches; libserum run over sequences of ROM frames (also frames the project
+  lacks), and changes to masks, shape modes, dynamic zones and colors tried on such sequences
+  and taken back, or applied as one undoable step (needs editor API version 5).
 - Planned: the analysis tools (varying pixels, mask merging, dynamic parts, sprite candidates).
 
 ## Build
@@ -46,8 +50,18 @@ The endpoint listens on 127.0.0.1 only (port 8975, or the next free one up to 89
 answers only requests with the token.
 
 Tools: `project_summary`, `list_frames`, `get_frame_image` (original, colorized, comparison
-mask, dynamic zones; enlarged with a pixel grid), `get_selection`, `show_frames`, `get_contact_sheet` (many frames in one picture), and for the retheming template
-`retheme_survey`, `retheme_preview` and `retheme_apply`.
+mask, dynamic zones; enlarged with a pixel grid), `get_selection`, `show_frames`,
+`get_contact_sheet` (many frames in one picture), for the retheming template `retheme_survey`,
+`retheme_preview` and `retheme_apply`, and for identification `comparison_masks`,
+`find_identification_conflicts`, `get_frame_text`, `identify_original`, `run_runtime`,
+`try_identification_changes` and `apply_identification_changes`.
+
+Identification: when a wrong frame or no frame shows (players report a score that is not
+shown after the game, say), ask Claude to find out why. It looks for masks that compare
+little and frames that catch others, builds the ROM frames the project lacks (a score with
+other digits) from the glyphs of project frames, runs them through libserum in the order a
+game shows them, tries a fix on the same sequences and shows you the result; it applies the
+fix only when you agree, as one undo step.
 
 Retheming: ask for a retheming template of the open project. The template keeps the text that
 varies (scores, counts, ball, player) as whole lines with their labels and blacks out the rest,
