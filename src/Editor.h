@@ -97,6 +97,19 @@ public:
         return m_api->SetDynamicColors(m_endpoint, frame, set, colors.data(),
                                        static_cast<uint32_t>(colors.size())) != 0;
     }
+    // Version 6: a frame with the original, made like the frame `like`; nullopt when refused.
+    std::optional<uint32_t> addFrame(const std::vector<uint8_t>& original, uint32_t like) const
+    {
+        if (m_api->version < 6) {
+            return std::nullopt;
+        }
+        uint32_t frame = CDMDPI_NONE;
+        if (!m_api->AddFrame(m_endpoint, original.data(), static_cast<uint32_t>(original.size()),
+                             like, &frame)) {
+            return std::nullopt;
+        }
+        return frame;
+    }
     [[nodiscard]] const ColorizingDMDEditorAPI* api() const { return m_api; }
 
 private:

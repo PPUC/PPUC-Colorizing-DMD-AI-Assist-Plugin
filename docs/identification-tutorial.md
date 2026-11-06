@@ -54,6 +54,12 @@ editor (`Edit -> Undo`), and nothing is saved until you save the project.
 Sequences can contain frames the project does not have, for example a score with other
 digits, made by editing a frame's text.
 
+When the ROM shows a frame that no project frame can catch without catching others, such as a
+score with more digits that sits elsewhere, Claude can add a frame for it (`add_frame`, editor
+API version 6). The new frame takes the pictures and settings of a frame of the same kind.
+The project has no dump of that frame, so Claude builds it from the glyphs of other frames.
+Check with the players or a dump that the ROM really shows it that way.
+
 ## Prompts
 
 Copy a prompt and replace the parts in angle brackets.

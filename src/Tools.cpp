@@ -1186,10 +1186,11 @@ uint16_t rgb565From(const std::string& text)
     return static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
 
-uint32_t frameArgument(const Snapshot& snapshot, const json& change)
+// A frame of the project, frames added by earlier changes included.
+uint32_t frameArgument(uint32_t frameCount, const json& change, const char* key = "frame")
 {
-    const long long frame = change.at("frame").get<long long>();
-    if (frame < 0 || frame >= static_cast<long long>(snapshot.project.frameCount)) {
+    const long long frame = change.at(key).get<long long>();
+    if (frame < 0 || frame >= static_cast<long long>(frameCount)) {
         throw ToolError("Frame " + std::to_string(frame) + " does not exist.");
     }
     return static_cast<uint32_t>(frame);
@@ -1203,12 +1204,13 @@ std::vector<std::string> makeChanges(const EditSession& session, const Snapshot&
     const ColorizingDMDEditorAPI* api = session.api();
     std::vector<std::string> done;
     uint32_t maskCount = snapshot.project.comparisonMaskCount;
+    uint32_t frameCount = snapshot.project.frameCount;
     for (const json& change : changes) {
         const std::string op = change.value("op", std::string());
         bool made = false;
         std::string what;
         if (op == "set_comparison") {
-            const uint32_t frame = frameArgument(snapshot, change);
+            const uint32_t frame = frameArgument(frameCount, change);
             const uint32_t mask = change.contains("mask") && !change["mask"].is_null()
                                       ? change["mask"].get<uint32_t>()
                                       : CDMDPI_NONE;
@@ -1230,7 +1232,7 @@ std::vector<std::string> makeChanges(const EditSession& session, const Snapshot&
             made = session.setComparisonMask(mask, maskFrom(snapshot, change));
             what = "mask " + std::to_string(mask) + " changed";
         } else if (op == "set_dynamic_zones") {
-            const uint32_t frame = frameArgument(snapshot, change);
+            const uint32_t frame = frameArgument(frameCount, change);
             const long long set = change.value("set", 0LL);
             if (set < 0 || set >= CDMDPI_DYNAMIC_SETS) {
                 throw ToolError("A dynamic set is 0 to 31.");
@@ -1258,7 +1260,7 @@ std::vector<std::string> makeChanges(const EditSession& session, const Snapshot&
             what = "frame " + std::to_string(frame) + ": dynamic zones of set " +
                    std::to_string(set);
         } else if (op == "set_dynamic_colors") {
-            const uint32_t frame = frameArgument(snapshot, change);
+            const uint32_t frame = frameArgument(frameCount, change);
             std::vector<uint16_t> colors;
             for (const json& color : change.at("colors")) {
                 colors.push_back(rgb565From(color.get<std::string>()));
@@ -1267,6 +1269,23 @@ std::vector<std::string> makeChanges(const EditSession& session, const Snapshot&
             made = session.setDynamicColors(frame, set, colors);
             what = "frame " + std::to_string(frame) + ": colors of dynamic set " +
                    std::to_string(set);
+        } else if (op == "add_frame") {
+            if (api->version < 6) {
+                throw ToolError("Adding frames needs editor API version 6; this editor has " +
+                                std::to_string(api->version) + ".");
+            }
+            const uint32_t like = frameArgument(frameCount, change, "like");
+            if (!change.contains("original")) {
+                throw ToolError("add_frame needs the original, as a sequence item.");
+            }
+            const auto original = sequenceFrom(snapshot, json::array({change["original"]}));
+            const std::optional<uint32_t> frame =
+                session.addFrame(original.front().second.pixels, like);
+            made = frame.has_value();
+            what = made ? "new frame " + std::to_string(*frame) + " like frame " +
+                              std::to_string(like)
+                        : "a frame like frame " + std::to_string(like);
+            frameCount += made ? 1 : 0;
         } else {
             throw ToolError("Unknown change '" + op + "'.");
         }
@@ -1297,6 +1316,11 @@ json tryIdentificationChanges(const Editor& editor, const json& arguments)
         } catch (const ToolError& error) {
             refused = error.what();
             return false;
+        }
+        // Frames the changes added are in the table too.
+        ColorizingDMDProjectInfo info{};
+        if (session.api()->GetProjectInfo(&info) && info.frameCount > changed.frames.size()) {
+            changed.frames.resize(info.frameCount);
         }
         for (uint32_t frame = 0; frame < changed.frames.size(); ++frame) {
             session.api()->GetFrameInfo(frame, &changed.frames[frame]);
@@ -1418,14 +1442,20 @@ json changesSchema()
          "areas as add_mask. op set_dynamic_zones: frame, set (0-31), areas (original pixels) "
          "added to the frame's zones (clear: true drops the others first). op "
          "set_dynamic_colors: frame, set, colors (\"#rrggbb\" per shade of the original, the "
-         "darkest first)."},
+         "darkest first). op add_frame (editor API 6): a frame the ROM shows that the project "
+         "lacks (a score with more digits), original (a sequence item: rows, or a frame with "
+         "patches), made like the frame like: its pictures and settings (dynamic zones, "
+         "colors, background, comparison mask); appended, its index is the frame count so far, "
+         "and later changes can name it."},
         {"items",
          {{"type", "object"},
           {"properties",
            {{"op",
              {{"type", "string"},
               {"enum", {"set_comparison", "add_mask", "set_mask", "set_dynamic_zones",
-                        "set_dynamic_colors"}}}},
+                        "set_dynamic_colors", "add_frame"}}}},
+            {"like", {{"type", "integer"}}},
+            {"original", {{"type", "object"}}},
             {"frame", {{"type", "integer"}}},
             {"frames", {{"type", "array"}, {"items", {{"type", "integer"}}}}},
             {"mask", {{"type", {"integer", "null"}}}},
@@ -1737,9 +1767,13 @@ std::string serverInstructions()
            "score with any digits) are made by patching a project frame with glyphs read from "
            "others; identify_original and run_runtime tell what libserum does with them. A "
            "frame whose mask ignores varying content needs dynamic zones there, else it shows "
-           "its own pixels instead of the ROM's. Check a fix with try_identification_changes "
-           "on sequences as a game plays them (what comes before matters), show the author the "
-           "result and apply it with apply_identification_changes only when the author agrees.";
+           "its own pixels instead of the ROM's. A ROM frame no project frame can catch without "
+           "catching others (a score layout the project has no frame of) gets a frame of its "
+           "own: the add_frame change, made like a frame of the same kind. Ask the author "
+           "whether the ROM really shows such a frame, as it is made, not dumped. Check a fix "
+           "with try_identification_changes on sequences as a game plays them (what comes "
+           "before matters), show the author the result and apply it with "
+           "apply_identification_changes only when the author agrees.";
 }
 
 }  // namespace aiassist
