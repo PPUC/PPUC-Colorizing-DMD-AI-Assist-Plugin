@@ -1,9 +1,9 @@
 # ColorizingDMD AI Assist
 
-A plugin for the [ColorizingDMD](https://github.com/PPUC/ColorizingDMD) editor that lets an AI
-assistant (Claude Code, Claude Desktop) work on the project open in the editor, through a local
-MCP endpoint. The author stays in control: the assistant reads the project, analyses it and
-proposes; changes become ordinary undoable edits in the editor.
+A plugin for the [PPUC Colorizing DMD](https://github.com/PPUC/PPUC-Colorizing-DMD) editor
+that lets an AI assistant (Claude Code, Claude Desktop) work on the project open in the editor,
+through a local MCP endpoint. The author stays in control: the assistant reads the project,
+analyses it and proposes; changes become ordinary undoable edits in the editor.
 
 For a closed group of testers; it is not part of the editor's public releases. See
 [docs/plan.md](docs/plan.md) for why and how.
@@ -39,6 +39,12 @@ and `THIRD-PARTY-NOTICES.md`); with
 `COLORIZINGDMD_PLUGIN_DIR` it is copied into a development editor's plugin folder. For a
 packaged editor, copy `AIAssist` into its plugin folder (`plugins` beside the program on
 Windows and Linux, `ColorizingDMD.app/Contents/PlugIns/vpx` on macOS).
+
+CI (`.github/workflows/build.yml`) builds and tests the plugin with warnings as errors for
+Windows (MinGW), Linux x86_64 and aarch64 and macOS arm64, against the editor API of a pinned
+editor commit (`COLORIZINGDMD_SHA`) and the vpinball plugin SDK the editor pins
+(`VPINBALL_SHA`). Every run uploads a plugin package per platform; a tag `v<version>` (as in
+`CMakeLists.txt` and `plugin.cfg`) collects them into a draft release.
 
 ## Use
 
