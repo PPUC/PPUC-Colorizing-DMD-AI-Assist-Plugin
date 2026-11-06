@@ -1259,6 +1259,27 @@ std::vector<std::string> makeChanges(const EditSession& session, const Snapshot&
             made = session.setDynamicZones(frame, zones);
             what = "frame " + std::to_string(frame) + ": dynamic zones of set " +
                    std::to_string(set);
+        } else if (op == "copy_dynamic") {
+            // Another frame's dynamic zones and the colors of all its sets, as Copy Frame
+            // Settings copies them: for a frame whose zones should match frames of its kind.
+            const uint32_t frame = frameArgument(frameCount, change);
+            const uint32_t like = frameArgument(frameCount, change, "like");
+            uint32_t width = 0;
+            uint32_t height = 0;
+            std::vector<uint8_t> zones(api->GetDynamicMask(like, nullptr, 0, &width, &height));
+            api->GetDynamicMask(like, zones.data(), static_cast<uint32_t>(zones.size()), nullptr,
+                                nullptr);
+            std::vector<uint16_t> colors(api->GetDynamicColors(like, nullptr, 0));
+            api->GetDynamicColors(like, colors.data(), static_cast<uint32_t>(colors.size()));
+            const std::size_t perSet = colors.size() / CDMDPI_DYNAMIC_SETS;
+            made = !zones.empty() && perSet > 0 && session.setDynamicZones(frame, zones);
+            for (uint32_t set = 0; made && set < CDMDPI_DYNAMIC_SETS; ++set) {
+                const std::vector<uint16_t> one(colors.begin() + set * perSet,
+                                                colors.begin() + (set + 1) * perSet);
+                made = session.setDynamicColors(frame, set, one);
+            }
+            what = "frame " + std::to_string(frame) + ": dynamic zones and colors of frame " +
+                   std::to_string(like);
         } else if (op == "set_dynamic_colors") {
             const uint32_t frame = frameArgument(frameCount, change);
             std::vector<uint16_t> colors;
@@ -1465,7 +1486,9 @@ json changesSchema()
          "areas as add_mask. op set_dynamic_zones: frame, set (0-31), areas (original pixels) "
          "added to the frame's zones (clear: true drops the others first). op "
          "set_dynamic_colors: frame, set, colors (\"#rrggbb\" per shade of the original, the "
-         "darkest first). op add_frame (editor API 6): a frame the ROM shows that the project "
+         "darkest first). op copy_dynamic: frame, like: the dynamic zones and the colors of "
+         "every set of the frame like, in place of the frame's. op add_frame (editor API 6): "
+         "a frame the ROM shows that the project "
          "lacks (a score with more digits), original (a sequence item: rows, or a frame with "
          "patches), made like the frame like: its pictures and settings (dynamic zones, "
          "colors, background, comparison mask); appended, its index is the frame count so far, "
@@ -1478,7 +1501,8 @@ json changesSchema()
            {{"op",
              {{"type", "string"},
               {"enum", {"set_comparison", "add_mask", "set_mask", "set_dynamic_zones",
-                        "set_dynamic_colors", "add_frame", "move_frames"}}}},
+                        "set_dynamic_colors", "copy_dynamic", "add_frame",
+                        "move_frames"}}}},
             {"like", {{"type", "integer"}}},
             {"before", {{"type", "integer"}}},
             {"original", {{"type", "object"}}},
