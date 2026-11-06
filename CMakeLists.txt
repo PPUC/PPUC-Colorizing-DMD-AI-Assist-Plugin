@@ -63,12 +63,16 @@ elseif(APPLE)
 endif()
 
 # The plugin's folder, as the editor's plugin folder holds it: AIAssist/plugin.cfg and the
-# library.
+# library, with the license, the README and the notices of the libraries built into it beside
+# them, which the plugin is passed on with.
 set(plugin_folder "${CMAKE_BINARY_DIR}/AIAssist")
 add_custom_command(TARGET AIAssistPlugin POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${plugin_folder}"
     COMMAND "${CMAKE_COMMAND}" -E copy "${PROJECT_SOURCE_DIR}/plugin.cfg" "${plugin_folder}/"
     COMMAND "${CMAKE_COMMAND}" -E copy "$<TARGET_FILE:AIAssistPlugin>" "${plugin_folder}/"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${PROJECT_SOURCE_DIR}/LICENSE"
+            "${PROJECT_SOURCE_DIR}/README.md" "${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.md"
+            "${plugin_folder}/"
     VERBATIM
 )
 if(COLORIZINGDMD_PLUGIN_DIR)

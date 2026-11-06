@@ -32,7 +32,8 @@ is built with (for the plugin SDK headers); nothing else to install: the HTTP se
         -DCOLORIZINGDMD_PLUGIN_DIR=/path/to/editor/build/vpx-plugins
     cmake --build build
 
-The plugin's folder is `build/AIAssist` (`plugin.cfg` and the library); with
+The plugin's folder is `build/AIAssist` (`plugin.cfg`, the library, `LICENSE`, this README
+and `THIRD-PARTY-NOTICES.md`); with
 `COLORIZINGDMD_PLUGIN_DIR` it is copied into a development editor's plugin folder. For a
 packaged editor, copy `AIAssist` into its plugin folder (`plugins` beside the program on
 Windows and Linux, `ColorizingDMD.app/Contents/PlugIns/vpx` on macOS).
@@ -75,3 +76,6 @@ Tests (no editor needed): `ctest --test-dir build`.
 ## License
 
 GPLv3 or later, as the editor.
+
+cpp-httplib and nlohmann/json are MIT licensed; `THIRD-PARTY-NOTICES.md` has their notices and
+goes into the plugin's folder.
