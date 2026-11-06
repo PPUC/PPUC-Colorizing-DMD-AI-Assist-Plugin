@@ -1286,6 +1286,19 @@ std::vector<std::string> makeChanges(const EditSession& session, const Snapshot&
                               std::to_string(like)
                         : "a frame like frame " + std::to_string(like);
             frameCount += made ? 1 : 0;
+        } else if (op == "move_frames") {
+            if (api->version < 6) {
+                throw ToolError("Moving frames needs editor API version 6; this editor has " +
+                                std::to_string(api->version) + ".");
+            }
+            std::vector<uint32_t> frames;
+            for (const json& frame : change.value("frames", json::array())) {
+                frames.push_back(frame.get<uint32_t>());
+            }
+            const uint32_t before = change.at("before").get<uint32_t>();
+            made = session.moveFrames(frames, before);
+            what = std::to_string(frames.size()) + " frames moved before frame " +
+                   std::to_string(before);
         } else {
             throw ToolError("Unknown change '" + op + "'.");
         }
@@ -1355,20 +1368,30 @@ json applyIdentificationChanges(const Editor& editor, const json& arguments)
     std::vector<std::string> done;
     std::string refused;
     const std::string name = arguments.value("name", std::string("Identification"));
-    const bool begun = editor.edit(name, [&](const EditSession& session) {
-        try {
-            done = makeChanges(session, snapshot, arguments.value("changes", json::array()));
-        } catch (const ToolError& error) {
-            refused = error.what();
-            return false;
-        }
-        return true;
-    });
+    bool notRecorded = false;
+    const bool begun = editor.edit(
+        name,
+        [&](const EditSession& session) {
+            try {
+                done = makeChanges(session, snapshot, arguments.value("changes", json::array()));
+            } catch (const ToolError& error) {
+                refused = error.what();
+                return false;
+            }
+            return true;
+        },
+        &notRecorded);
     if (!begun) {
         throw ToolError("The editor could not begin an edit (the author may be editing).");
     }
     if (!refused.empty()) {
         throw ToolError(refused);
+    }
+    if (notRecorded) {
+        throw ToolError("The editor refused the changes and took them back: in a team project a "
+                        "partner works on what they change (the editor's status bar says who). "
+                        "Nothing was changed; the author merges the partners' changes or asks "
+                        "them first.");
     }
     std::string text = "Made as one undo step '" + name + "': ";
     for (std::size_t index = 0; index < done.size(); ++index) {
@@ -1446,15 +1469,18 @@ json changesSchema()
          "lacks (a score with more digits), original (a sequence item: rows, or a frame with "
          "patches), made like the frame like: its pictures and settings (dynamic zones, "
          "colors, background, comparison mask); appended, its index is the frame count so far, "
-         "and later changes can name it."},
+         "and later changes can name it. op move_frames (editor API 6): frames, as one block "
+         "in their order before the frame before (numbered as before the move; the frame count "
+         "for behind the last). libserum searches in frame order, so the order matters."},
         {"items",
          {{"type", "object"},
           {"properties",
            {{"op",
              {{"type", "string"},
               {"enum", {"set_comparison", "add_mask", "set_mask", "set_dynamic_zones",
-                        "set_dynamic_colors", "add_frame"}}}},
+                        "set_dynamic_colors", "add_frame", "move_frames"}}}},
             {"like", {{"type", "integer"}}},
+            {"before", {{"type", "integer"}}},
             {"original", {{"type", "object"}}},
             {"frame", {{"type", "integer"}}},
             {"frames", {{"type", "array"}, {"items", {{"type", "integer"}}}}},

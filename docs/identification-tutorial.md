@@ -60,6 +60,10 @@ API version 6). The new frame takes the pictures and settings of a frame of the 
 The project has no dump of that frame, so Claude builds it from the glyphs of other frames.
 Check with the players or a dump that the ROM really shows it that way.
 
+The order of the frames matters too, as libserum searches in frame order. Claude can move
+frames (`move_frames`, version 6). In a team project the editor refuses changes to what a
+partner works on; Claude then says so, and you merge the partners' changes or ask them first.
+
 ## Prompts
 
 Copy a prompt and replace the parts in angle brackets.

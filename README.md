@@ -18,7 +18,8 @@ For a closed group of testers; it is not part of the editor's public releases. S
   an original matches; libserum run over sequences of ROM frames (also frames the project
   lacks), and changes to masks, shape modes, dynamic zones and colors tried on such sequences
   and taken back, or applied as one undoable step (needs editor API version 5); new frames for
-  ROM frames no project frame can catch, made like another frame (needs version 6).
+  ROM frames no project frame can catch, made like another frame, and frames moved, as the
+  search order matters (needs version 6).
 - Planned: the analysis tools (varying pixels, mask merging, dynamic parts, sprite candidates).
 
 ## Build

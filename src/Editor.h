@@ -110,6 +110,14 @@ public:
         }
         return frame;
     }
+    // Version 6: the frames as one block before the frame `before` (the frame count: behind the
+    // last).
+    bool moveFrames(const std::vector<uint32_t>& frames, uint32_t before) const
+    {
+        return m_api->version >= 6 &&
+               m_api->MoveFrames(m_endpoint, frames.data(), static_cast<uint32_t>(frames.size()),
+                                 before) != 0;
+    }
     [[nodiscard]] const ColorizingDMDEditorAPI* api() const { return m_api; }
 
 private:
@@ -176,9 +184,14 @@ public:
     // Runs the changes as one edit batch under the name, in one call on the main thread, so
     // the author cannot edit in between: recorded as one undo step when changes returns true,
     // taken back otherwise. Returns false when no batch could begin (no project, or the editor's
-    // API has no editing part).
-    bool edit(const std::string& name, const std::function<bool(const EditSession&)>& changes) const
+    // API has no editing part). *refused (unless null) tells whether the editor refused to record
+    // the batch and took it back (from API version 6: in a team project, a partner's claim).
+    bool edit(const std::string& name, const std::function<bool(const EditSession&)>& changes,
+              bool* refused = nullptr) const
     {
+        if (refused) {
+            *refused = false;
+        }
         if (!canEdit()) {
             return false;
         }
@@ -195,7 +208,9 @@ public:
                 m_api->EndEdit(m_endpoint, 0);
                 throw;
             }
-            m_api->EndEdit(m_endpoint, apply ? 1 : 0);
+            if (!m_api->EndEdit(m_endpoint, apply ? 1 : 0) && apply && refused) {
+                *refused = true;
+            }
         });
         return begun;
     }
