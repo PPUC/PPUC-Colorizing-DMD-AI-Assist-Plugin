@@ -110,6 +110,15 @@ public:
         }
         return frame;
     }
+    // Version 7: Edit -> Copy Frame Settings, the parts (CDMDPI_SETTINGS_*) of source on the
+    // frames.
+    bool copyFrameSettings(uint32_t source, const std::vector<uint32_t>& frames,
+                           uint32_t parts) const
+    {
+        return m_api->version >= 7 &&
+               m_api->CopyFrameSettings(m_endpoint, source, frames.data(),
+                                        static_cast<uint32_t>(frames.size()), parts) != 0;
+    }
     // Version 6: the frames as one block before the frame `before` (the frame count: behind the
     // last).
     bool moveFrames(const std::vector<uint32_t>& frames, uint32_t before) const
