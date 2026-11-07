@@ -20,6 +20,8 @@ For a closed group of testers; it is not part of the editor's public releases. S
   and taken back, or applied as one undoable step (needs editor API version 5); new frames for
   ROM frames no project frame can catch, made like another frame, and frames moved, as the
   search order matters (needs version 6).
+- Tidying up: which frames and sprites lack HD (`hd_survey`), Create HD with the editor's
+  filters, deleting frames, naming and deleting sections (needs editor API version 8).
 - Planned: the analysis tools (varying pixels, mask merging, dynamic parts, sprite candidates).
 
 ## Build
@@ -63,7 +65,8 @@ mask, dynamic zones; enlarged with a pixel grid), `get_selection`, `show_frames`
 `get_contact_sheet` (many frames in one picture), for the retheming template `retheme_survey`,
 `retheme_preview` and `retheme_apply`, and for identification `comparison_masks`,
 `find_identification_conflicts`, `get_frame_text`, `identify_original`, `run_runtime`,
-`try_identification_changes` and `apply_identification_changes`.
+`try_identification_changes` and `apply_identification_changes` (which also take the HD,
+frame and section changes), and `hd_survey`.
 
 Identification: when a wrong frame or no frame shows (players report a score that is not
 shown after the game, say), ask Claude to find out why. It looks for masks that compare

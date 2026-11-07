@@ -110,6 +110,32 @@ public:
         }
         return frame;
     }
+    // Version 8: Create HD of frames (CDMDPI_UPSCALE_*, CDMDPI_HD_*) and of a sprite, deleting
+    // frames, sections.
+    bool createFrameHd(const std::vector<uint32_t>& frames, uint32_t filter, uint32_t flags) const
+    {
+        return m_api->version >= 8 &&
+               m_api->CreateFrameHd(m_endpoint, frames.data(),
+                                    static_cast<uint32_t>(frames.size()), filter, flags) != 0;
+    }
+    bool createSpriteHd(uint32_t sprite, uint32_t filter) const
+    {
+        return m_api->version >= 8 && m_api->CreateSpriteHd(m_endpoint, sprite, filter) != 0;
+    }
+    bool deleteFrames(const std::vector<uint32_t>& frames) const
+    {
+        return m_api->version >= 8 &&
+               m_api->DeleteFrames(m_endpoint, frames.data(),
+                                   static_cast<uint32_t>(frames.size())) != 0;
+    }
+    bool setSection(uint32_t frame, const std::string& name) const
+    {
+        return m_api->version >= 8 && m_api->SetSection(m_endpoint, frame, name.c_str()) != 0;
+    }
+    bool deleteSection(uint32_t section) const
+    {
+        return m_api->version >= 8 && m_api->DeleteSection(m_endpoint, section) != 0;
+    }
     // Version 7: Edit -> Copy Frame Settings, the parts (CDMDPI_SETTINGS_*) of source on the
     // frames.
     bool copyFrameSettings(uint32_t source, const std::vector<uint32_t>& frames,
@@ -180,6 +206,17 @@ public:
     [[nodiscard]] int apiVersion() const { return m_api->version; }
     [[nodiscard]] bool canEdit() const { return m_api->version >= 2; }
     [[nodiscard]] bool canRunRuntime() const { return m_api->version >= 5; }
+    // Whether each sprite has an HD picture.
+    [[nodiscard]] std::vector<bool> spritesWithHd(uint32_t spriteCount) const
+    {
+        std::vector<bool> hd(spriteCount, false);
+        m_run([&]() {
+            for (uint32_t sprite = 0; sprite < spriteCount; ++sprite) {
+                hd[sprite] = m_api->GetSpritePicture(sprite, 1, nullptr, 0, nullptr, nullptr) > 0;
+            }
+        });
+        return hd;
+    }
 
     [[nodiscard]] std::optional<RuntimeRun> runOriginals(const std::vector<uint8_t>& originals,
                                                          uint32_t frameCount,

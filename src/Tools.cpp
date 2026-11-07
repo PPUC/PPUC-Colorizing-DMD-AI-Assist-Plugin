@@ -774,6 +774,60 @@ json comparisonMasks(const Editor& editor)
     return json{{"content", json::array({textContent(text.str())})}};
 }
 
+json hdSurvey(const Editor& editor)
+{
+    const Snapshot snapshot = requireSnapshot(editor, false);
+    std::ostringstream text;
+    if (!snapshot.project.hdWidth) {
+        text << "The project has no HD plane: nothing to create.";
+        return json{{"content", json::array({textContent(text.str())})}};
+    }
+    text << "HD (" << snapshot.project.hdWidth << "x" << snapshot.project.hdHeight
+         << ") per section: frames without an HD picture, then sprites. create_hd makes them "
+            "(try_identification_changes, apply_identification_changes); scale2x keeps the "
+            "colors as libserum's own upscaling does, the interpolating filters blend them. "
+            "Create HD needs a project with SD and HD planes.\n"
+         << "section | frames | without HD | the frames without HD\n";
+    std::map<uint32_t, std::vector<uint32_t>> missing;
+    std::map<uint32_t, uint32_t> total;
+    for (uint32_t frame = 0; frame < snapshot.frames.size(); ++frame) {
+        const uint32_t section = snapshot.frames[frame].section;
+        ++total[section];
+        if (!snapshot.frames[frame].hasHd) {
+            missing[section].push_back(frame);
+        }
+    }
+    for (const auto& [section, count] : total) {
+        const std::vector<uint32_t>& frames = missing[section];
+        text << (section < snapshot.sections.size() ? snapshot.sections[section].name
+                                                    : std::string("-"))
+             << " | " << count << " | " << frames.size() << " | ";
+        if (frames.empty()) {
+            text << "-";
+        }
+        for (std::size_t index = 0; index < frames.size() && index < 20; ++index) {
+            text << (index ? ", " : "") << frames[index];
+        }
+        if (frames.size() > 20) {
+            text << " and " << frames.size() - 20 << " more";
+        }
+        text << '\n';
+    }
+    const std::vector<bool> sprites = editor.spritesWithHd(snapshot.project.spriteCount);
+    std::vector<uint32_t> withoutHd;
+    for (uint32_t sprite = 0; sprite < sprites.size(); ++sprite) {
+        if (!sprites[sprite]) {
+            withoutHd.push_back(sprite);
+        }
+    }
+    text << "Sprites without HD: " << withoutHd.size() << " of " << sprites.size();
+    for (std::size_t index = 0; index < withoutHd.size(); ++index) {
+        text << (index ? ", " : ": ") << withoutHd[index];
+    }
+    text << '\n';
+    return json{{"content", json::array({textContent(text.str())})}};
+}
+
 json identificationConflicts(const Editor& editor, const json& arguments)
 {
     const Snapshot snapshot = requireSnapshot(editor, false);
@@ -1196,6 +1250,72 @@ uint32_t frameArgument(uint32_t frameCount, const json& change, const char* key 
     return static_cast<uint32_t>(frame);
 }
 
+uint32_t upscaleFilterFrom(const json& change)
+{
+    const std::string name = change.value("filter", std::string("scale2x"));
+    static const std::pair<const char*, uint32_t> kFilters[] = {
+        {"nearest", CDMDPI_UPSCALE_NEAREST},   {"bilinear", CDMDPI_UPSCALE_BILINEAR},
+        {"bicubic", CDMDPI_UPSCALE_BICUBIC},   {"lanczos4", CDMDPI_UPSCALE_LANCZOS4},
+        {"scale2x", CDMDPI_UPSCALE_SCALE2X},
+    };
+    for (const auto& [text, value] : kFilters) {
+        if (name == text) {
+            return value;
+        }
+    }
+    throw ToolError("Filters are nearest, bilinear, bicubic, lanczos4 and scale2x, not '" + name +
+                    "'.");
+}
+
+// The frames a change names: frames, or every frame of the section named, as the project has
+// them now (earlier changes of the same call included).
+std::vector<uint32_t> framesFrom(const ColorizingDMDEditorAPI* api, uint32_t frameCount,
+                                 const json& change)
+{
+    std::vector<uint32_t> frames;
+    if (change.contains("section")) {
+        const std::string name = change["section"].get<std::string>();
+        ColorizingDMDProjectInfo info{};
+        api->GetProjectInfo(&info);
+        uint32_t section = CDMDPI_NONE;
+        for (uint32_t index = 0; index < info.sectionCount; ++index) {
+            char text[64] = {};
+            uint32_t first = 0;
+            if (api->GetSection(index, text, sizeof text, &first) && name == text) {
+                section = index;
+            }
+        }
+        if (section == CDMDPI_NONE) {
+            throw ToolError("There is no section '" + name + "'.");
+        }
+        for (uint32_t frame = 0; frame < frameCount; ++frame) {
+            ColorizingDMDFrameInfo frameInfo{};
+            if (api->GetFrameInfo(frame, &frameInfo) && frameInfo.section == section) {
+                frames.push_back(frame);
+            }
+        }
+    }
+    for (const json& frame : change.value("frames", json::array())) {
+        const long long index = frame.get<long long>();
+        if (index < 0 || index >= static_cast<long long>(frameCount)) {
+            throw ToolError("Frame " + std::to_string(index) + " does not exist.");
+        }
+        frames.push_back(static_cast<uint32_t>(index));
+    }
+    if (frames.empty()) {
+        throw ToolError("The change names no frame (frames, or section).");
+    }
+    return frames;
+}
+
+void requireApi(const ColorizingDMDEditorAPI* api, int version, const std::string& what)
+{
+    if (api->version < version) {
+        throw ToolError(what + " needs editor API version " + std::to_string(version) +
+                        "; this editor has " + std::to_string(api->version) + ".");
+    }
+}
+
 // Makes the changes in the open batch (on the main thread); a description per change, or a
 // ToolError naming the change the editor refused.
 std::vector<std::string> makeChanges(const EditSession& session, const Snapshot& snapshot,
@@ -1317,6 +1437,52 @@ std::vector<std::string> makeChanges(const EditSession& session, const Snapshot&
                               std::to_string(like)
                         : "a frame like frame " + std::to_string(like);
             frameCount += made ? 1 : 0;
+        } else if (op == "create_hd") {
+            requireApi(api, 8, "Create HD");
+            const std::vector<uint32_t> frames = framesFrom(api, frameCount, change);
+            const uint32_t flags =
+                (change.value("background_mask", true) ? CDMDPI_HD_BACKGROUND_MASK : 0u) |
+                (change.value("background_image", true) ? CDMDPI_HD_BACKGROUND_IMAGE : 0u);
+            made = session.createFrameHd(frames, upscaleFilterFrom(change), flags);
+            what = "HD for " + std::to_string(frames.size()) + " frames (" +
+                   change.value("filter", std::string("scale2x")) + ")";
+        } else if (op == "create_sprite_hd") {
+            requireApi(api, 8, "Create HD");
+            const uint32_t sprite = change.at("sprite").get<uint32_t>();
+            made = session.createSpriteHd(sprite, upscaleFilterFrom(change));
+            what = "HD for sprite " + std::to_string(sprite);
+        } else if (op == "delete_frames") {
+            requireApi(api, 8, "Deleting frames");
+            const std::vector<uint32_t> frames = framesFrom(api, frameCount, change);
+            made = session.deleteFrames(frames);
+            what = std::to_string(frames.size()) + " frames deleted";
+            const std::set<uint32_t> unique(frames.begin(), frames.end());
+            frameCount -= made ? static_cast<uint32_t>(unique.size()) : 0u;
+        } else if (op == "set_section") {
+            requireApi(api, 8, "Sections");
+            const uint32_t frame = frameArgument(frameCount, change);
+            const std::string name = change.at("name").get<std::string>();
+            made = session.setSection(frame, name);
+            what = "section '" + name + "' at frame " + std::to_string(frame);
+        } else if (op == "delete_section") {
+            requireApi(api, 8, "Sections");
+            // By name, as the project has it now (earlier changes of this call included).
+            const std::string name = change.at("name").get<std::string>();
+            ColorizingDMDProjectInfo info{};
+            api->GetProjectInfo(&info);
+            uint32_t section = CDMDPI_NONE;
+            for (uint32_t index = 0; index < info.sectionCount; ++index) {
+                char text[64] = {};
+                uint32_t first = 0;
+                if (api->GetSection(index, text, sizeof text, &first) && name == text) {
+                    section = index;
+                }
+            }
+            if (section == CDMDPI_NONE) {
+                throw ToolError("There is no section '" + name + "'.");
+            }
+            made = session.deleteSection(section);
+            what = "section '" + name + "' deleted";
         } else if (op == "move_frames") {
             if (api->version < 6) {
                 throw ToolError("Moving frames needs editor API version 6; this editor has " +
@@ -1361,13 +1527,20 @@ json tryIdentificationChanges(const Editor& editor, const json& arguments)
             refused = error.what();
             return false;
         }
-        // Frames the changes added are in the table too.
+        // Frames the changes added or deleted, and their sections, as the table shows them.
         ColorizingDMDProjectInfo info{};
-        if (session.api()->GetProjectInfo(&info) && info.frameCount > changed.frames.size()) {
+        if (session.api()->GetProjectInfo(&info)) {
             changed.frames.resize(info.frameCount);
         }
         for (uint32_t frame = 0; frame < changed.frames.size(); ++frame) {
             session.api()->GetFrameInfo(frame, &changed.frames[frame]);
+        }
+        changed.sections.clear();
+        char name[64] = {};
+        uint32_t first = 0;
+        for (uint32_t index = 0; session.api()->GetSection(index, name, sizeof name, &first);
+             ++index) {
+            changed.sections.push_back(Section{name, first});
         }
         run = runOriginalsNow(session.api(), originals, static_cast<uint32_t>(inputs.size()),
                               sheet);
@@ -1505,7 +1678,13 @@ json changesSchema()
          "colors, background, comparison mask); appended, its index is the frame count so far, "
          "and later changes can name it. op move_frames (editor API 6): frames, as one block "
          "in their order before the frame before (numbered as before the move; the frame count "
-         "for behind the last). libserum searches in frame order, so the order matters."},
+         "for behind the last). libserum searches in frame order, so the order matters. "
+         "Editor API 8: op create_hd: frames or section (a name), filter (nearest, bilinear, "
+         "bicubic, lanczos4, scale2x; default scale2x, as libserum upscales), "
+         "background_mask and background_image (default true): Create HD for the frames "
+         "without HD. op create_sprite_hd: sprite, filter. op delete_frames: frames or "
+         "section; the frames behind move down for later changes. op set_section: frame, name "
+         "(names the section starting there or adds one). op delete_section: name."},
         {"items",
          {{"type", "object"},
           {"properties",
@@ -1513,7 +1692,14 @@ json changesSchema()
              {{"type", "string"},
               {"enum", {"set_comparison", "add_mask", "set_mask", "set_dynamic_zones",
                         "set_dynamic_colors", "copy_dynamic", "add_frame",
-                        "move_frames"}}}},
+                        "move_frames", "create_hd", "create_sprite_hd", "delete_frames",
+                        "set_section", "delete_section"}}}},
+            {"filter", {{"type", "string"}}},
+            {"section", {{"type", "string"}}},
+            {"name", {{"type", "string"}}},
+            {"sprite", {{"type", "integer"}}},
+            {"background_mask", {{"type", "boolean"}}},
+            {"background_image", {{"type", "boolean"}}},
             {"like", {{"type", "integer"}}},
             {"before", {{"type", "integer"}}},
             {"original", {{"type", "object"}}},
@@ -1648,6 +1834,11 @@ json toolList()
                                                     "'Retheming template'"}};
               return properties;
           }())}},
+        {{"name", "hd_survey"},
+         {"description",
+          "Which frames (per section) and sprites have no HD picture yet: what create_hd and "
+          "create_sprite_hd would make."},
+         {"inputSchema", schema(json::object())}},
         {{"name", "comparison_masks"},
          {"description",
           "Every comparison mask: how many original pixels it compares and where, the fewest "
@@ -1704,9 +1895,9 @@ json toolList()
                  json::array({"sequence"}))}},
         {{"name", "try_identification_changes"},
          {"description",
-          "Makes changes to identification and dynamic content, runs the sequence through "
-          "libserum as run_runtime does, and takes the changes back: to check a fix before "
-          "proposing it. Changes nothing in the end."},
+          "Makes changes (identification, dynamic content, frames, HD, sections), runs the "
+          "sequence through libserum as run_runtime does, and takes the changes back: to check "
+          "a fix before proposing it. Changes nothing in the end."},
          {"inputSchema",
           schema({{"changes", changesSchema()},
                   {"sequence", sequenceSchema()},
@@ -1762,6 +1953,9 @@ json callTool(const Editor& editor, const std::string& name, const json& argumen
         }
         if (name == "retheme_apply") {
             return rethemeApply(editor, arguments);
+        }
+        if (name == "hd_survey") {
+            return hdSurvey(editor);
         }
         if (name == "comparison_masks") {
             return comparisonMasks(editor);
@@ -1834,7 +2028,12 @@ std::string serverInstructions()
            "whether the ROM really shows such a frame, as it is made, not dumped. Check a fix "
            "with try_identification_changes on sequences as a game plays them (what comes "
            "before matters), show the author the result and apply it with "
-           "apply_identification_changes only when the author agrees.";
+           "apply_identification_changes only when the author agrees.\n\n"
+           "Tidying up (editor API 8): hd_survey lists frames and sprites without HD; the "
+           "changes create_hd and create_sprite_hd make it (scale2x keeps the colors), "
+           "delete_frames removes frames, set_section and delete_section organize the frame "
+           "list (frames added for missing ROM frames get a section of their own). Propose, "
+           "try and apply them as the other changes.";
 }
 
 }  // namespace aiassist
