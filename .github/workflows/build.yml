@@ -24,8 +24,8 @@ permissions:
   contents: read
 
 env:
-  # The editor API (plugin-api/ColorizingDMDPlugin.h, version 7) of the editor's sources:
-  # the editor's tag v3.99.35.
+  # The editor API (plugin-api/ColorizingDMDPlugin.h, version 8) of the editor's sources:
+  # the editor's tag v3.99.36.
   COLORIZINGDMD_REPOSITORY: PPUC/PPUC-Colorizing-DMD
   COLORIZINGDMD_SHA: 36411ca9abffae9522c5ca0cb391b4d1471d0c2b
   # The VPX plugin SDK (plugins/plugins) of PPUC's vpinball fork, at the commit the editor pins
